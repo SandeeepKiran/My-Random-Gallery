@@ -1,0 +1,177 @@
+package com.mousy.myrandomgallery.data.model
+
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ViewList
+import androidx.compose.material.icons.filled.Favorite
+import androidx.compose.material.icons.filled.MoreHoriz
+import androidx.compose.material.icons.filled.PhotoAlbum
+import androidx.compose.material.icons.filled.Schedule
+import androidx.compose.material.icons.filled.Shuffle
+import androidx.compose.material.icons.filled.Slideshow
+import androidx.compose.material.icons.filled.VideoLibrary
+import androidx.compose.ui.graphics.vector.ImageVector
+
+enum class AppTab(val label: String, val icon: ImageVector, val locked: Boolean = false) {
+    FAV("Favourites", Icons.Default.Favorite),
+    RECENT("Recent", Icons.Default.Schedule),
+    GALLERY("Gallery", Icons.Default.Shuffle, locked = true),
+    SLIDESHOW("Slideshow", Icons.Default.Slideshow),
+    MULTIVIDEO("Videos", Icons.Default.VideoLibrary),
+    ALBUM("Albums", Icons.Default.PhotoAlbum),
+    SETTINGS("More", Icons.Default.MoreHoriz, locked = true);
+
+    val key: String get() = name.lowercase()
+
+    companion object {
+        fun fromKey(key: String): AppTab? = entries.find { it.key == key }
+
+        val defaultOrder: List<AppTab> = listOf(FAV, RECENT, GALLERY, SLIDESHOW, SETTINGS)
+    }
+}
+
+enum class GridMode {
+    SWIPE, SCROLL;
+
+    val icon get() = when (this) {
+        SWIPE -> Icons.Default.Shuffle
+        SCROLL -> Icons.AutoMirrored.Filled.ViewList
+    }
+}
+
+enum class ThemeMode { LIGHT, DARK }
+
+enum class AccentColor(val key: String, val label: String, val pastelHex: Long) {
+    ROSE("rose", "Rose", 0xFFE9A8BD),
+    LAVENDER("lavender", "Lavender", 0xFFC9B7F5),
+    MINT("mint", "Mint", 0xFF8FF0C4),
+    PEACH("peach", "Peach", 0xFFFFCBA8),
+    SKY("sky", "Sky", 0xFFA9D9FF),
+    SAND("sand", "Sand", 0xFFECD79A);
+
+    companion object {
+        fun fromKey(key: String): AccentColor = entries.find { it.key == key } ?: ROSE
+    }
+}
+
+data class FileTypeFilter(
+    val photo: Boolean = true,
+    val video: Boolean = true,
+    val gif: Boolean = true,
+)
+
+data class TabFeatures(
+    val multivideo: Boolean = false,
+    val album: Boolean = false,
+)
+
+data class MultiVideoCell(
+    val index: Int,
+    val mediaId: Long? = null,
+    val uri: String? = null,
+    val playing: Boolean = false,
+    val muted: Boolean = false,
+    val progress: Float = 0f,
+)
+
+data class MultiVideoState(
+    val count: Int = 2,
+    val muteAll: Boolean = false,
+    val landscape: Boolean = false,
+    val overlayVisible: Boolean = true,
+    val pickerIndex: Int? = null,
+    val cells: List<MultiVideoCell> = List(4) { MultiVideoCell(index = it) },
+)
+
+data class SnackMessage(
+    val text: String,
+    val actionLabel: String? = null,
+    val action: (() -> Unit)? = null,
+)
+
+data class AppSettings(
+    val themeMode: ThemeMode = ThemeMode.DARK,
+    val amoled: Boolean = false,
+    val accent: AccentColor = AccentColor.ROSE,
+    val columns: Int = 3,
+    val gridMode: GridMode = GridMode.SWIPE,
+    val selectedFolders: Set<String> = emptySet(),
+    val safTreeUris: Set<String> = emptySet(),
+    val fileTypes: Map<String, Boolean> = emptyMap(),
+    val favIds: Set<String> = emptySet(),
+    val dontLoop: Boolean = false,
+    val disableSwipeDelete: Boolean = true,
+    val disableEditDelete: Boolean = false,
+    val copyFavs: Boolean = false,
+    val copyFavPath: String = "",
+    val copyFavTreeUri: String = "",
+    val hiddenFolders: Map<String, Boolean> = defaultHiddenFolders(),
+    val tabFeatures: TabFeatures = TabFeatures(),
+    val tabOrder: List<AppTab> = AppTab.defaultOrder,
+    val tabHidden: Set<AppTab> = emptySet(),
+    val speedIdx: Int = 2,
+    val customMs: Long = 8_000L,
+    val recentWindowDays: Int = 30,
+    val favWindow: FavWindow = FavWindow.ALL,
+    val favTypes: FileTypeFilter = FileTypeFilter(),
+) {
+    companion object {
+        fun defaultHiddenFolders(): Map<String, Boolean> = mapOf(
+            ".thumbnails" to false,
+            ".hidden_pics" to false,
+            "Android/media" to false,
+            ".Trash" to false,
+        )
+    }
+}
+
+sealed class FavWindow {
+    data object ALL : FavWindow()
+    data class Days(val days: Int) : FavWindow()
+
+    fun label(): String = when (this) {
+        ALL -> "All time"
+        is Days -> "$days Days"
+    }
+
+    fun matches(ageDays: Int): Boolean = when (this) {
+        ALL -> true
+        is Days -> ageDays <= days
+    }
+
+    companion object {
+        val options: List<FavWindow> = listOf(
+            ALL, Days(7), Days(14), Days(30), Days(60), Days(90), Days(365),
+        )
+
+        fun cycle(current: FavWindow): FavWindow {
+            val idx = options.indexOf(current).coerceAtLeast(0)
+            return options[(idx + 1) % options.size]
+        }
+    }
+}
+
+object SlideshowSpeeds {
+    data class Speed(val label: String, val ms: Long)
+
+    val speeds: List<Speed> = listOf(
+        Speed("1s", 1_000),
+        Speed("2s", 2_000),
+        Speed("5s", 5_000),
+        Speed("10s", 10_000),
+        Speed("15s", 15_000),
+        Speed("30s", 30_000),
+        Speed("1min", 60_000),
+        Speed("5min", 300_000),
+        Speed("Custom", 8_000),
+        Speed("Off", 0),
+    )
+
+    const val CUSTOM_INDEX = 8
+    const val OFF_INDEX = 9
+
+    val recentWindows: List<Int> = listOf(7, 14, 30, 60, 90, 365)
+
+    val supportedExtensions: Set<String> = setOf(
+        "png", "jpg", "jpeg", "webp", "gif", "mp4", "mp3",
+    )
+}
