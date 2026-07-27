@@ -92,6 +92,7 @@ class GalleryViewModel(application: Application) : AndroidViewModel(application)
     private val shuffleSeeds = mutableListOf<Long>()
     private var seedIndex = -1
     private var lastMediaScanKey: String? = null
+    private var lastFolderDiscoveryKey: String? = null
     private var settingsRestored = false
     private var refreshToken = 0
 
@@ -172,7 +173,15 @@ class GalleryViewModel(application: Application) : AndroidViewModel(application)
                 )
                 _allMedia.value = media
                 _sampleLimit.value = SamplingDefaults.sampleSizeFor(s.avgViewedPerSession, media.size)
-                _discoveredFolders.value = mediaRepo.discoverFolders(s.hiddenFolders)
+                // Which folders exist on the device doesn't change when you tick one of them,
+                // so this device-wide walk only reruns when the hidden-folder rules change.
+                val folderKey = s.hiddenFolders.entries
+                    .sortedBy { it.key }
+                    .joinToString(",") { "${it.key}=${it.value}" }
+                if (folderKey != lastFolderDiscoveryKey || _discoveredFolders.value.isEmpty()) {
+                    lastFolderDiscoveryKey = folderKey
+                    _discoveredFolders.value = mediaRepo.discoverFolders(s.hiddenFolders)
+                }
                 autoConfigureFileTypes(media, s)
                 refreshFolderFavourites(_settings.value)
                 refreshGlobalFavourites(_settings.value)
@@ -1387,14 +1396,22 @@ class GalleryViewModel(application: Application) : AndroidViewModel(application)
             android.util.Log.e("GalleryVM", "Favourites filter failed window=$favWindow", t)
             emptyList()
         }
+        // Favourites have no natural order, so they follow the gallery's random draw and
+        // re-deal on the same swipe gesture.
+        val shuffledFavourites = seededSample(favourites, sample.seed, favourites.size)
 
         val recentWindow = inputs.recentWindow
         val recent = try {
-            playable
-                .filter { item ->
-                    passFavType(item, inputs.recentTypes) && recentWindow.matches(item.ageDays(now))
-                }
-                .sortedByDescending { it.recencyMs }
+            val matching = playable.filter { item ->
+                passFavType(item, inputs.recentTypes) && recentWindow.matches(item.ageDays(now))
+            }
+            // Swipe mode is about random sets; scroll mode is about browsing, where newest-first
+            // is what "Recent" should mean.
+            if (inputs.gridMode == GridMode.SWIPE) {
+                seededSample(matching, sample.seed, matching.size)
+            } else {
+                matching.sortedByDescending { it.recencyMs }
+            }
         } catch (t: Throwable) {
             android.util.Log.e("GalleryVM", "Recent filter failed window=$recentWindow", t)
             emptyList()
@@ -1421,7 +1438,7 @@ class GalleryViewModel(application: Application) : AndroidViewModel(application)
         return LibraryState(
             gallery = gallery,
             galleryPrefetch = galleryPrefetch,
-            favourites = favourites,
+            favourites = shuffledFavourites,
             recent = recent,
             videos = videos,
             albums = albums,
@@ -1495,6 +1512,7 @@ class GalleryViewModel(application: Application) : AndroidViewModel(application)
         copyFavs = copyFavs,
         copyFavTreeUri = copyFavTreeUri,
         showAllFavourites = showAllFavourites,
+        gridMode = gridMode,
         selectedFolders = selectedFolders,
         safTreeUris = safTreeUris,
     )
@@ -1520,6 +1538,7 @@ class GalleryViewModel(application: Application) : AndroidViewModel(application)
         val copyFavs: Boolean = false,
         val copyFavTreeUri: String = "",
         val showAllFavourites: Boolean = false,
+        val gridMode: GridMode = GridMode.SWIPE,
         val selectedFolders: Set<String> = emptySet(),
         val safTreeUris: Set<String> = emptySet(),
     )

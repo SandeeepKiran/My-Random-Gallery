@@ -67,6 +67,10 @@ screen goes to thumbnails.
 
 Default order: Favourites → Recent → Gallery → Slideshow → More. Tab order and visibility are configurable in **More → Tabs & Layout** (Gallery and More cannot be hidden).
 
+The swipe/scroll grid style is chosen on the Gallery tab and applies to Favourites and Recent too,
+so swiping re-deals those tabs as well. In scroll mode Recent stays newest-first; in swipe mode it
+becomes a random set drawn from its date window.
+
 ### Gestures (from wireframe)
 
 | Gesture | Where | Action |
@@ -106,7 +110,9 @@ Default order: Favourites → Recent → Gallery → Slideshow → More. Tab ord
   shows favourited media even when its folder isn't a selected source
 - Source folders via **SAF** (Storage Access Framework) + MediaStore discovery
 - File-type filters detected from selected folders, with cached per-extension counts and an
-  on-demand **Refresh counts** action (labelled with the time of the last scan)
+  on-demand **Refresh counts** action (labelled with the time of the last scan). Counting reads
+  the MediaStore **Files** collection so stray non-media extensions show up too — note that
+  scoped storage only exposes non-media files inside folders you granted via SAF
 - Optional favourites folder sync (copy on favourite / remove copy on unfavourite)
 - Hidden folders dialog
 - Export / import settings
@@ -356,6 +362,23 @@ stops the old one instead of racing it.
 | SAF tree walk | One cursor per directory instead of a separate query per file attribute |
 | Viewer images | Decoded at 1.5× screen size (never `Size.ORIGINAL`), neighbours prefetched, grid thumbnail reused as an instant placeholder |
 | Item keys / timestamps | Precomputed once per item rather than rebuilt on every read |
+| Folder matching | Selections pre-normalised and lowercased once per scan, not once per row |
+| Folder discovery | Only re-walked when the hidden-folder rules change, not when you tick a source |
+
+### 5. Sizing the thumbnail cache
+
+Coil gets **45%** of the app's memory class (its default is 20%), and each neighbouring random
+set prefetches only about a screenful. Those two numbers are linked: prefetching too eagerly
+evicts the pages you're about to swipe back to, which shows up as thumbnails reloading on every
+swipe even though they were loaded seconds ago.
+
+Debug builds attach Coil's `DebugLogger`, so the split is measurable:
+
+```powershell
+adb logcat -d | Select-String "RealImageLoader:.*Successful"
+```
+
+Visible tiles should report `MEMORY_CACHE`; `DISK` lines are the background prefetch.
 
 ---
 

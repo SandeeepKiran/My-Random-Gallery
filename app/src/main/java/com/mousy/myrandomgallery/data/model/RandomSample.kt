@@ -23,8 +23,11 @@ object SamplingDefaults {
     /** Roughly a 1-in-25 chance that any given gallery slot is a favourite. */
     const val FAVOURITE_RATE = 0.04f
 
-    /** Items of the neighbouring random sets to decode ahead of a swipe. */
-    const val PREFETCH_PAGE = 48
+    /**
+     * Items of each neighbouring random set to decode ahead of a swipe. Roughly one screenful:
+     * prefetching more than this evicts the pages the user is about to swipe back to.
+     */
+    const val PREFETCH_PAGE = 24
 
     fun sampleSizeFor(avgViewed: Float, totalCount: Int): Int {
         if (totalCount <= MIN_SAMPLE) return totalCount

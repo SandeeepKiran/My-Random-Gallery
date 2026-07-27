@@ -34,7 +34,7 @@ import com.mousy.myrandomgallery.data.model.AppTab
 
 /** Icon-only bar: every dp saved here is another row of thumbnails. */
 object GalleryTabBar {
-    val Height = 48.dp
+    val Height = 56.dp
 }
 
 /**
@@ -134,7 +134,7 @@ private fun CompactTabBar(
                                 if (selected) MaterialTheme.colorScheme.secondaryContainer
                                 else androidx.compose.ui.graphics.Color.Transparent,
                             )
-                            .padding(horizontal = 14.dp, vertical = 4.dp),
+                            .padding(horizontal = 16.dp, vertical = 6.dp),
                     ) {
                         Icon(
                             tab.icon,
@@ -144,7 +144,7 @@ private fun CompactTabBar(
                             } else {
                                 MaterialTheme.colorScheme.onSurfaceVariant
                             },
-                            modifier = Modifier.size(22.dp),
+                            modifier = Modifier.size(24.dp),
                         )
                     }
                 }

@@ -64,6 +64,7 @@ import android.content.res.Configuration
 import androidx.compose.ui.util.fastAny
 import androidx.compose.ui.util.fastForEach
 import androidx.compose.ui.graphics.painter.ColorPainter
+import coil3.SingletonImageLoader
 import coil3.compose.AsyncImage
 import coil3.request.CachePolicy
 import coil3.request.ImageRequest
@@ -91,6 +92,8 @@ private const val MAX_COLUMNS = 6
 /** Short enough to feel immediate, long enough to read as a swipe rather than a cut. */
 private const val SWIPE_OUT_MS = 120
 private const val SWIPE_IN_MS = 150
+/** Roughly a screen and a half of tiles decoded below the fold while scrolling. */
+private const val SCROLL_PREFETCH_AHEAD = 30
 
 @Composable
 fun MediaGrid(
@@ -168,10 +171,24 @@ fun MediaGrid(
             contentAlignment = if (gridMode == GridMode.SWIPE) Alignment.Center else Alignment.TopCenter,
         ) {
             if (gridMode == GridMode.SCROLL) {
-                LaunchedEffect(gridState, displayItems.size) {
+                val context = LocalContext.current
+                LaunchedEffect(gridState, displayItems, thumbPx) {
+                    val loader = SingletonImageLoader.get(context)
                     snapshotFlow { gridState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0 }
                         .distinctUntilChanged()
-                        .collect { onReachedEnd(it) }
+                        .collect { lastVisible ->
+                            onReachedEnd(lastVisible)
+                            // Decode the rows just below the fold so scrolling doesn't reveal
+                            // empty tiles that only start loading once they're on screen.
+                            val from = lastVisible + 1
+                            val to = (lastVisible + SCROLL_PREFETCH_AHEAD)
+                                .coerceAtMost(displayItems.lastIndex)
+                            for (i in from..to) {
+                                val next = displayItems[i]
+                                if (next.mediaType == MediaType.AUDIO) continue
+                                loader.enqueue(gridThumbRequest(context, next, thumbPx))
+                            }
+                        }
                 }
             }
 

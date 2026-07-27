@@ -28,6 +28,7 @@ import androidx.compose.ui.unit.dp
 import coil3.SingletonImageLoader
 import com.mousy.myrandomgallery.data.model.GridMode
 import com.mousy.myrandomgallery.data.model.MediaItem
+import com.mousy.myrandomgallery.data.model.MediaType
 import com.mousy.myrandomgallery.ui.components.EmptyFoldersState
 import com.mousy.myrandomgallery.ui.components.MediaGrid
 import com.mousy.myrandomgallery.ui.components.ThumbSpec
@@ -72,7 +73,11 @@ fun GalleryScreen(
     LaunchedEffect(prefetch, thumbPx) {
         if (prefetch.isEmpty()) return@LaunchedEffect
         val loader = SingletonImageLoader.get(context)
-        prefetch.forEach { item -> loader.enqueue(gridThumbRequest(context, item, thumbPx)) }
+        prefetch.forEach { item ->
+            // Audio cells draw an icon, never a bitmap — decoding them only fails noisily.
+            if (item.mediaType == MediaType.AUDIO) return@forEach
+            loader.enqueue(gridThumbRequest(context, item, thumbPx))
+        }
     }
 
     Column(modifier = modifier.fillMaxSize()) {

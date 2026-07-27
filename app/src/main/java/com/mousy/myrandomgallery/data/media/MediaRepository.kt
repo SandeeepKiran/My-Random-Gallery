@@ -123,10 +123,7 @@ class MediaRepository(private val context: Context) {
         val counts = HashMap<String, Int>()
         val storeFolders = mediaStoreFolderKeys(selectedFolders)
         if (storeFolders.isNotEmpty()) {
-            for (collection in mediaCollections) {
-                currentCoroutineContext().ensureActive()
-                countExtensionRows(collection, storeFolders, hiddenFolders, counts)
-            }
+            countExtensionRows(storeFolders, hiddenFolders, counts)
         }
         for (treeUri in safTreeUris) {
             currentCoroutineContext().ensureActive()
@@ -182,7 +179,9 @@ class MediaRepository(private val context: Context) {
             MediaStore.MediaColumns.DURATION,
         )
 
-        val normalizedSelected = selectedFolders.map { normalizeFolderPath(it) }.toSet()
+        // Pre-lowered once: this comparison runs for every row of the device library, and
+        // re-normalising the selection per row was a large slice of a folder change.
+        val selectedLower = selectedFolders.map { normalizeFolderPath(it).lowercase(Locale.US) }
         val hidden = hiddenSegments(hiddenFolders)
         val items = mutableListOf<MediaItem>()
         context.contentResolver.query(
@@ -215,11 +214,12 @@ class MediaRepository(private val context: Context) {
                     normalizeFolderPath(inferRelativePath(dataPath))
                 }
                 if (relativePath.isBlank()) continue
-                if (isHiddenPath(relativePath, hidden)) continue
+                val pathLower = relativePath.lowercase(Locale.US)
+                if (isHiddenPath(pathLower, hidden)) continue
 
                 if (!discoverOnly) {
-                    if (normalizedSelected.isEmpty()) continue
-                    if (!folderMatchesSelection(relativePath, normalizedSelected)) continue
+                    if (selectedLower.isEmpty()) continue
+                    if (!matchesSelection(pathLower, selectedLower)) continue
                 }
 
                 val ext = displayName.substringAfterLast('.', "").lowercase(Locale.US)
@@ -273,15 +273,20 @@ class MediaRepository(private val context: Context) {
             while (cursor.moveToNext()) {
                 if (++row % CANCEL_CHECK_ROWS == 0) currentCoroutineContext().ensureActive()
                 val path = folderPathOf(cursor.getString(relCol), cursor.getString(dataCol))
-                if (path.isBlank() || isHiddenPath(path, hidden)) continue
+                if (path.isBlank() || isHiddenPath(path.lowercase(Locale.US), hidden)) continue
                 into[path] = (into[path] ?: 0) + 1
             }
         }
     }
 
-    /** Two-column cursor over one collection, tallying rows per file extension. */
+    /**
+     * Tallies rows per file extension.
+     *
+     * Queries the *Files* collection rather than the three media collections: the point of this
+     * list is to surface stray types, and anything that isn't an image/video/audio row only
+     * appears here.
+     */
     private suspend fun countExtensionRows(
-        collection: Uri,
         selectedNormalized: Set<String>,
         hiddenFolders: Map<String, Boolean>,
         into: MutableMap<String, Int>,
@@ -292,7 +297,8 @@ class MediaRepository(private val context: Context) {
             MediaStore.MediaColumns.DATA,
         )
         val hidden = hiddenSegments(hiddenFolders)
-        context.contentResolver.query(collection, projection, null, null, null)?.use { cursor ->
+        val selectedLower = selectedNormalized.map { it.lowercase(Locale.US) }
+        context.contentResolver.query(filesCollection, projection, null, null, null)?.use { cursor ->
             val nameCol = cursor.getColumnIndexOrThrow(MediaStore.MediaColumns.DISPLAY_NAME)
             val relCol = cursor.getColumnIndexOrThrow(MediaStore.MediaColumns.RELATIVE_PATH)
             val dataCol = cursor.getColumnIndexOrThrow(MediaStore.MediaColumns.DATA)
@@ -300,8 +306,10 @@ class MediaRepository(private val context: Context) {
             while (cursor.moveToNext()) {
                 if (++row % CANCEL_CHECK_ROWS == 0) currentCoroutineContext().ensureActive()
                 val path = folderPathOf(cursor.getString(relCol), cursor.getString(dataCol))
-                if (path.isBlank() || isHiddenPath(path, hidden)) continue
-                if (!folderMatchesSelection(path, selectedNormalized)) continue
+                if (path.isBlank()) continue
+                val pathLower = path.lowercase(Locale.US)
+                if (isHiddenPath(pathLower, hidden)) continue
+                if (!matchesSelection(pathLower, selectedLower)) continue
                 val name = cursor.getString(nameCol) ?: continue
                 val ext = name.substringAfterLast('.', "").lowercase(Locale.US)
                 if (ext.isBlank()) continue
@@ -440,10 +448,24 @@ class MediaRepository(private val context: Context) {
             .filter { !it.value }
             .map { it.key.lowercase(Locale.US) }
 
-    private fun isHiddenPath(path: String, hiddenSegments: List<String>): Boolean {
+    /** [pathLower] must already be normalised and lowercased. */
+    private fun isHiddenPath(pathLower: String, hiddenSegments: List<String>): Boolean {
         if (hiddenSegments.isEmpty()) return false
-        val lower = path.lowercase(Locale.US)
-        return hiddenSegments.any { lower.contains(it) }
+        return hiddenSegments.any { pathLower.contains(it) }
+    }
+
+    /** Both sides already normalised and lowercased — no allocation per row. */
+    private fun matchesSelection(pathLower: String, selectedLower: List<String>): Boolean {
+        for (sel in selectedLower) {
+            if (pathLower == sel) return true
+            if (pathLower.length > sel.length &&
+                pathLower[sel.length] == '/' &&
+                pathLower.startsWith(sel)
+            ) {
+                return true
+            }
+        }
+        return false
     }
 
     private fun inferRelativePath(dataPath: String): String {
@@ -491,6 +513,10 @@ class MediaRepository(private val context: Context) {
             MediaStore.Audio.Media.EXTERNAL_CONTENT_URI,
         )
 
+        /** Everything MediaStore will show us, including non-playable file types. */
+        private val filesCollection: Uri =
+            MediaStore.Files.getContentUri(MediaStore.VOLUME_EXTERNAL)
+
         private val knownRoots = setOf(
             "pictures", "dcim", "movies", "download", "downloads", "myfiles", "documents",
         )
@@ -506,8 +532,13 @@ class MediaRepository(private val context: Context) {
                 .filter { it.isNotBlank() }
                 .toSet()
 
-        fun normalizeFolderPath(path: String): String =
-            path.trim().trim('/').replace('\\', '/').replace(duplicateSlashes, "/")
+        fun normalizeFolderPath(path: String): String {
+            val trimmed = path.trim().trim('/')
+            // Fast path: nearly every MediaStore row is already clean, and the regex was
+            // allocating a matcher for each one of them.
+            if (trimmed.indexOf('\\') < 0 && !trimmed.contains("//")) return trimmed
+            return trimmed.replace('\\', '/').replace(duplicateSlashes, "/").trim('/')
+        }
 
         fun folderMatchesSelection(folderPath: String, selectedNormalized: Set<String>): Boolean {
             if (selectedNormalized.isEmpty()) return false

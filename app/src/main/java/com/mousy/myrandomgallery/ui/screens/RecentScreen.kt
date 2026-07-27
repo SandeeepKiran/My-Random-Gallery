@@ -41,6 +41,10 @@ fun RecentScreen(
     onItemLongPress: (MediaItem) -> Unit,
     onSetColumns: (Int) -> Unit,
     onGoSettings: () -> Unit,
+    /** Shared with the Gallery tab; only the Gallery exposes the toggle. */
+    gridMode: GridMode = GridMode.SCROLL,
+    onSwipeShuffle: (Int) -> Unit = {},
+    hapticsEnabled: Boolean = true,
     thumbnailPadding: Boolean = true,
     modifier: Modifier = Modifier,
 ) {
@@ -82,15 +86,16 @@ fun RecentScreen(
             else -> MediaGrid(
                 items = items,
                 columns = columns,
-                gridMode = GridMode.SCROLL,
+                gridMode = gridMode,
                 favouriteKeys = favouriteKeys,
                 selectedKeys = selectedKeys,
                 onItemClick = onItemClick,
                 onItemDoubleTap = onItemDoubleTap,
                 onItemLongPress = onItemLongPress,
-                onSwipeShuffle = {},
+                onSwipeShuffle = onSwipeShuffle,
                 onSetColumns = onSetColumns,
                 thumbnailPadding = thumbnailPadding,
+                hapticsEnabled = hapticsEnabled,
                 modifier = Modifier.weight(1f),
             )
         }
