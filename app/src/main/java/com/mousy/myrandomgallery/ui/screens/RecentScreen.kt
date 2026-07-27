@@ -41,6 +41,7 @@ fun RecentScreen(
     onItemLongPress: (MediaItem) -> Unit,
     onPinchColumns: (Float) -> Unit,
     onGoSettings: () -> Unit,
+    thumbnailPadding: Boolean = true,
     modifier: Modifier = Modifier,
 ) {
     Column(modifier = modifier.fillMaxSize()) {
@@ -89,6 +90,7 @@ fun RecentScreen(
                 onItemLongPress = onItemLongPress,
                 onSwipeShuffle = {},
                 onPinchColumns = onPinchColumns,
+                thumbnailPadding = thumbnailPadding,
                 modifier = Modifier.weight(1f),
             )
         }

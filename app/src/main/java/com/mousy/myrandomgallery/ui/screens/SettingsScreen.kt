@@ -217,13 +217,23 @@ fun SettingsScreen(
 
         SectionTitle("File Types")
         SettingsGroup {
-            val exts = (settings.discoveredFileTypeCounts.keys + settings.fileTypes.keys)
-                .ifEmpty { SlideshowSpeeds.supportedExtensions }
+            // Always show discovered extensions from scan; never fall back to a hardcoded preset
+            // when discoveries exist. Empty only when nothing has been scanned yet.
+            val discovered = settings.discoveredFileTypeCounts
+            val exts = (discovered.keys + settings.fileTypes.keys)
+                .filter { it.isNotBlank() }
+                .distinct()
+                .sorted()
             if (exts.isEmpty()) {
-                Text("Select a source folder to detect file types.", modifier = Modifier.padding(16.dp))
+                Text(
+                    "Select a source folder to detect file types from your library.",
+                    modifier = Modifier.padding(16.dp),
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
             } else {
-                exts.sorted().forEach { ext ->
+                exts.forEach { ext ->
                     val supported = ext in SlideshowSpeeds.supportedExtensions
+                    val count = discovered[ext] ?: 0
                     Row(
                         Modifier
                             .fillMaxWidth()
@@ -237,17 +247,19 @@ fun SettingsScreen(
                                 color = if (supported) {
                                     MaterialTheme.colorScheme.onSurface
                                 } else {
-                                    MaterialTheme.colorScheme.onSurfaceVariant
+                                    MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.55f)
                                 },
                             )
                             Text(
                                 if (supported) {
-                                    "${settings.discoveredFileTypeCounts[ext] ?: 0} files"
+                                    "$count files"
                                 } else {
-                                    "not media · ${settings.discoveredFileTypeCounts[ext] ?: 0} files"
+                                    "not media · $count files"
                                 },
                                 style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(
+                                    alpha = if (supported) 1f else 0.55f,
+                                ),
                             )
                         }
                         Checkbox(
@@ -377,7 +389,7 @@ fun SettingsScreen(
                 .padding(bottom = 4.dp),
         )
         Text(
-            "v$appVersion",
+            "App Version: $appVersion",
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             textAlign = TextAlign.Center,

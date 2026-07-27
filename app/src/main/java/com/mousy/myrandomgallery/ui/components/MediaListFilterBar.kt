@@ -34,7 +34,7 @@ import com.mousy.myrandomgallery.data.model.FileTypeFilter
 fun MediaListFilterBar(
     title: String,
     types: FileTypeFilter,
-    window: FavWindow,
+    window: FavWindow?,
     typeMenuOpen: Boolean,
     onToggleTypeMenu: () -> Unit,
     onToggleType: (String) -> Unit,
@@ -43,6 +43,7 @@ fun MediaListFilterBar(
 ) {
     var dateMenuOpen by remember { mutableStateOf(false) }
     val safeWindow = remember(window) { FavWindow.normalize(window) }
+    val dateOptions = remember { FavWindow.options.filterNotNull() }
 
     Row(
         modifier = modifier
@@ -85,7 +86,7 @@ fun MediaListFilterBar(
                 Text(safeWindow.shortLabel(), modifier = Modifier.padding(start = 4.dp))
             }
             DropdownMenu(expanded = dateMenuOpen, onDismissRequest = { dateMenuOpen = false }) {
-                FavWindow.options.forEach { option ->
+                dateOptions.forEach { option ->
                     val canonical = FavWindow.normalize(option)
                     DropdownMenuItem(
                         text = { Text(canonical.label()) },
@@ -94,7 +95,6 @@ fun MediaListFilterBar(
                         },
                         onClick = {
                             dateMenuOpen = false
-                            // Always pass the companion-list instance (esp. Days(365)).
                             onSelectWindow(canonical)
                         },
                     )

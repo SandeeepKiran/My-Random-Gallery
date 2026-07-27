@@ -6,6 +6,15 @@ import android.net.Uri
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.spring
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.scaleIn
+import androidx.compose.animation.scaleOut
+import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.CircularProgressIndicator
@@ -54,8 +63,18 @@ fun GalleryApp(
     val view = LocalView.current
     val appVersion = remember {
         runCatching {
-            context.packageManager.getPackageInfo(context.packageName, 0).versionName ?: "1.0.0"
-        }.getOrDefault("1.0.0")
+            val pm = context.packageManager
+            val pkg = context.packageName
+            val info = pm.getPackageInfo(pkg, 0)
+            val name = info.versionName ?: "1.0.0"
+            val abi = android.os.Build.SUPPORTED_ABIS.firstOrNull()
+                ?: runCatching {
+                    @Suppress("DEPRECATION")
+                    context.applicationInfo.nativeLibraryDir?.substringAfterLast('/')
+                }.getOrNull()
+                ?: ""
+            if (abi.isNotBlank()) "v$name ($abi)" else "v$name"
+        }.getOrDefault("v1.0.0")
     }
 
     val backEnabled = state.viewerOpen ||
@@ -155,12 +174,13 @@ fun GalleryApp(
     }
 
     val hideBottomBar = (state.viewerOpen && !state.viewerChrome) ||
-        (state.currentTab == AppTab.MULTIVIDEO && state.multiVideo.landscape && !state.multiVideo.chromeVisible)
+        (state.currentTab == AppTab.MULTIVIDEO && state.multiVideo.landscape)
 
     MainScaffold(
         currentTab = state.currentTab,
         visibleTabs = state.visibleTabs,
         viewerOpen = state.viewerOpen,
+        viewerSlideshowMode = state.viewerSlideshowMode,
         selectMode = state.selectMode,
         bottomBarVisible = !hideBottomBar,
         selectionBar = {
@@ -192,7 +212,24 @@ fun GalleryApp(
         onTabSelected = viewModel::selectTab,
     ) {
         Box(Modifier.fillMaxSize()) {
-            when (state.currentTab) {
+            AnimatedContent(
+                targetState = state.currentTab,
+                transitionSpec = {
+                    (fadeIn(spring(stiffness = Spring.StiffnessMediumLow)) +
+                        scaleIn(
+                            initialScale = 0.98f,
+                            animationSpec = spring(stiffness = Spring.StiffnessMediumLow),
+                        )) togetherWith
+                        (fadeOut(spring(stiffness = Spring.StiffnessMedium)) +
+                            scaleOut(
+                                targetScale = 0.98f,
+                                animationSpec = spring(stiffness = Spring.StiffnessMedium),
+                            ))
+                },
+                label = "mainTab",
+                modifier = Modifier.fillMaxSize(),
+            ) { tab ->
+                when (tab) {
                 AppTab.GALLERY -> GalleryScreen(
                     items = state.gallery,
                     columns = state.settings.columns,
@@ -224,6 +261,7 @@ fun GalleryApp(
                     favTypes = state.settings.favTypes,
                     favWindow = state.settings.favWindow,
                     favTypeMenuOpen = state.favTypeMenuOpen,
+                    thumbnailPadding = state.settings.thumbnailPadding,
                     onToggleFavTypeMenu = viewModel::toggleFavTypeMenu,
                     onToggleFavType = viewModel::toggleFavType,
                     onSelectFavWindow = viewModel::setFavWindow,
@@ -245,6 +283,7 @@ fun GalleryApp(
                     listTypes = state.settings.recentTypes,
                     listWindow = state.settings.recentWindow,
                     typeMenuOpen = state.recentTypeMenuOpen,
+                    thumbnailPadding = state.settings.thumbnailPadding,
                     onToggleTypeMenu = viewModel::toggleRecentTypeMenu,
                     onToggleType = viewModel::toggleRecentType,
                     onSelectWindow = viewModel::setRecentWindow,
@@ -282,6 +321,7 @@ fun GalleryApp(
                     noFolders = state.noFolders,
                     favouriteKeys = state.settings.favIds,
                     selectedKeys = state.selectedKeys,
+                    thumbnailPadding = state.settings.thumbnailPadding,
                     onOpenAlbum = viewModel::openAlbum,
                     onCloseAlbum = viewModel::closeAlbum,
                     onShuffle = { viewModel.shuffleGrid() },
@@ -368,6 +408,7 @@ fun GalleryApp(
                     },
                 )
                 AppTab.SLIDESHOW -> Unit
+                }
             }
 
             if (state.loading) {
@@ -375,7 +416,22 @@ fun GalleryApp(
             }
         }
 
-        if (state.viewerOpen) {
+        AnimatedVisibility(
+            visible = state.viewerOpen,
+            enter = fadeIn(spring(stiffness = Spring.StiffnessMediumLow)) +
+                scaleIn(
+                    initialScale = 0.94f,
+                    animationSpec = spring(
+                        dampingRatio = Spring.DampingRatioNoBouncy,
+                        stiffness = Spring.StiffnessMediumLow,
+                    ),
+                ),
+            exit = fadeOut(spring(stiffness = Spring.StiffnessMedium)) +
+                scaleOut(
+                    targetScale = 0.94f,
+                    animationSpec = spring(stiffness = Spring.StiffnessMedium),
+                ),
+        ) {
             FullscreenViewer(
                 item = state.viewerItem,
                 index = state.viewerIndex,
@@ -390,6 +446,8 @@ fun GalleryApp(
                 disableSwipeDelete = state.settings.disableSwipeDelete || state.settings.deletesDisabled,
                 deleteEnabled = !state.settings.deletesDisabled,
                 slideshowMode = state.viewerSlideshowMode,
+                muted = state.viewerMuted,
+                loopVideos = !state.settings.dontLoop,
                 onClose = viewModel::closeViewer,
                 onToggleChrome = viewModel::toggleViewerChrome,
                 onNavigate = viewModel::viewerNavigate,
@@ -409,6 +467,10 @@ fun GalleryApp(
                 },
                 onDelete = viewModel::requestDeleteCurrent,
                 onDetails = viewModel::openDetails,
+                onToggleMute = viewModel::toggleViewerMute,
+                onVideoEnded = viewModel::onViewerVideoEnded,
+                onUserInteracted = viewModel::noteViewerInteraction,
+                chromeAutoHideNonce = state.viewerChromeNonce,
                 modifier = Modifier.fillMaxSize(),
             )
         }

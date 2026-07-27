@@ -41,6 +41,7 @@ fun FavouritesScreen(
     onItemLongPress: (MediaItem) -> Unit,
     onPinchColumns: (Float) -> Unit,
     onGoSettings: () -> Unit,
+    thumbnailPadding: Boolean = true,
     modifier: Modifier = Modifier,
 ) {
     Column(modifier = modifier.fillMaxSize()) {
@@ -90,6 +91,7 @@ fun FavouritesScreen(
                 onItemLongPress = onItemLongPress,
                 onSwipeShuffle = {},
                 onPinchColumns = onPinchColumns,
+                thumbnailPadding = thumbnailPadding,
                 modifier = Modifier.weight(1f),
             )
         }

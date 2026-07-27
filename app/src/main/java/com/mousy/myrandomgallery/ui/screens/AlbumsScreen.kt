@@ -1,13 +1,16 @@
 package com.mousy.myrandomgallery.ui.screens
 
+import android.content.res.Configuration
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
@@ -24,6 +27,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.mousy.myrandomgallery.data.media.MediaRepository
@@ -48,8 +52,12 @@ fun AlbumsScreen(
     onItemLongPress: (MediaItem) -> Unit,
     onPinchColumns: (Float) -> Unit,
     onGoSettings: () -> Unit,
+    thumbnailPadding: Boolean = true,
     modifier: Modifier = Modifier,
 ) {
+    val landscape = LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
+    val albumColumns = if (landscape) 4 else 2
+
     if (albumOpen != null) {
         Column(modifier = modifier.fillMaxSize()) {
             Row(
@@ -87,20 +95,25 @@ fun AlbumsScreen(
                     onItemLongPress = onItemLongPress,
                     onSwipeShuffle = {},
                     onPinchColumns = onPinchColumns,
+                    thumbnailPadding = thumbnailPadding,
                     modifier = Modifier.weight(1f),
                 )
             }
         }
     } else {
-        Column(modifier = modifier.fillMaxSize().padding(horizontal = 16.dp)) {
-            Text("Albums", style = MaterialTheme.typography.headlineSmall, modifier = Modifier.padding(vertical = 14.dp))
+        Column(modifier = modifier.fillMaxSize().padding(horizontal = if (landscape) 12.dp else 16.dp)) {
+            Text(
+                "Albums",
+                style = MaterialTheme.typography.headlineSmall,
+                modifier = Modifier.padding(vertical = 14.dp),
+            )
             if (noFolders) {
                 EmptyFoldersState(onChooseFolders = onGoSettings)
             } else {
                 LazyVerticalGrid(
-                    columns = GridCells.Fixed(2),
-                    horizontalArrangement = Arrangement.spacedBy(16.dp),
-                    verticalArrangement = Arrangement.spacedBy(16.dp),
+                    columns = GridCells.Fixed(albumColumns),
+                    horizontalArrangement = Arrangement.spacedBy(if (landscape) 10.dp else 16.dp),
+                    verticalArrangement = Arrangement.spacedBy(if (landscape) 10.dp else 16.dp),
                 ) {
                     items(albums, key = { it.path }) { album ->
                         Column(
@@ -109,23 +122,34 @@ fun AlbumsScreen(
                             Surface(
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .aspectRatio(1f),
+                                    .aspectRatio(if (landscape) 1.15f else 1f),
                                 shape = MaterialTheme.shapes.large,
                                 tonalElevation = 2.dp,
                             ) {
-                                Icon(
-                                    Icons.Default.PhotoLibrary,
-                                    null,
-                                    modifier = Modifier.padding(32.dp),
-                                    tint = MaterialTheme.colorScheme.outline,
-                                )
+                                Box(
+                                    modifier = Modifier.fillMaxSize(),
+                                    contentAlignment = Alignment.Center,
+                                ) {
+                                    Icon(
+                                        Icons.Default.PhotoLibrary,
+                                        null,
+                                        modifier = Modifier.size(if (landscape) 36.dp else 48.dp),
+                                        tint = MaterialTheme.colorScheme.outline,
+                                    )
+                                }
                             }
-                            Text(album.displayName, style = MaterialTheme.typography.titleSmall, modifier = Modifier.padding(top = 8.dp))
+                            Text(
+                                album.displayName,
+                                style = MaterialTheme.typography.titleSmall,
+                                modifier = Modifier.padding(top = 8.dp),
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
                             Text(
                                 album.path,
                                 style = MaterialTheme.typography.labelSmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                maxLines = 2,
+                                maxLines = if (landscape) 1 else 2,
                                 overflow = TextOverflow.Ellipsis,
                             )
                             Text("${album.mediaCount}", style = MaterialTheme.typography.labelSmall)

@@ -2,6 +2,7 @@ package com.mousy.myrandomgallery.ui.components
 
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
@@ -10,6 +11,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Checkbox
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -27,6 +29,8 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 
+private val DialogButtonPadding = PaddingValues(horizontal = 20.dp, vertical = 14.dp)
+
 @Composable
 fun DeleteConfirmDialog(
     count: Int,
@@ -40,13 +44,29 @@ fun DeleteConfirmDialog(
             Text("This hides the file in the app for this session. You can Undo from the snackbar.")
         },
         confirmButton = {
-            TextButton(onClick = onConfirm) {
-                Text("Yes, delete", color = Color(0xFFE53935))
+            TextButton(
+                onClick = onConfirm,
+                contentPadding = DialogButtonPadding,
+                modifier = Modifier.heightIn(min = 52.dp),
+            ) {
+                Text(
+                    "Yes, delete",
+                    color = Color(0xFFE53935),
+                    style = MaterialTheme.typography.titleMedium,
+                )
             }
         },
         dismissButton = {
-            TextButton(onClick = onDismiss) {
-                Text("No", color = Color(0xFF43A047))
+            TextButton(
+                onClick = onDismiss,
+                contentPadding = DialogButtonPadding,
+                modifier = Modifier.heightIn(min = 52.dp),
+            ) {
+                Text(
+                    "No, keep the file",
+                    color = Color(0xFF43A047),
+                    style = MaterialTheme.typography.titleMedium,
+                )
             }
         },
     )
@@ -64,13 +84,29 @@ fun ResetSettingsConfirmDialog(
             Text("Appearance, folders, filters, and safety toggles return to defaults. Favourites are kept. You can Undo from the snackbar.")
         },
         confirmButton = {
-            TextButton(onClick = onConfirm) {
-                Text("Yes, reset", color = Color(0xFFE53935))
+            TextButton(
+                onClick = onConfirm,
+                contentPadding = DialogButtonPadding,
+                modifier = Modifier.heightIn(min = 52.dp),
+            ) {
+                Text(
+                    "Yes, reset",
+                    color = Color(0xFFE53935),
+                    style = MaterialTheme.typography.titleMedium,
+                )
             }
         },
         dismissButton = {
-            TextButton(onClick = onDismiss) {
-                Text("No", color = Color(0xFF43A047))
+            TextButton(
+                onClick = onDismiss,
+                contentPadding = DialogButtonPadding,
+                modifier = Modifier.heightIn(min = 52.dp),
+            ) {
+                Text(
+                    "No, keep settings",
+                    color = Color(0xFF43A047),
+                    style = MaterialTheme.typography.titleMedium,
+                )
             }
         },
     )
@@ -99,7 +135,11 @@ fun DetailsDialog(
             }
         },
         confirmButton = {
-            TextButton(onClick = onDismiss) { Text("Close") }
+            TextButton(
+                onClick = onDismiss,
+                contentPadding = DialogButtonPadding,
+                modifier = Modifier.heightIn(min = 48.dp),
+            ) { Text("Close", style = MaterialTheme.typography.titleMedium) }
         },
     )
 }
@@ -135,12 +175,20 @@ fun CustomSpeedDialog(
             )
         },
         confirmButton = {
-            TextButton(onClick = {
-                onConfirm(seconds.toIntOrNull()?.coerceAtLeast(1) ?: 1)
-            }) { Text("OK") }
+            TextButton(
+                onClick = {
+                    onConfirm(seconds.toIntOrNull()?.coerceAtLeast(1) ?: 1)
+                },
+                contentPadding = DialogButtonPadding,
+                modifier = Modifier.heightIn(min = 48.dp),
+            ) { Text("OK", style = MaterialTheme.typography.titleMedium) }
         },
         dismissButton = {
-            TextButton(onClick = onDismiss) { Text("Cancel") }
+            TextButton(
+                onClick = onDismiss,
+                contentPadding = DialogButtonPadding,
+                modifier = Modifier.heightIn(min = 48.dp),
+            ) { Text("Cancel", style = MaterialTheme.typography.titleMedium) }
         },
     )
 }
@@ -171,7 +219,11 @@ fun HiddenFoldersDialog(
             }
         },
         confirmButton = {
-            TextButton(onClick = onDismiss) { Text("Done") }
+            TextButton(
+                onClick = onDismiss,
+                contentPadding = DialogButtonPadding,
+                modifier = Modifier.heightIn(min = 48.dp),
+            ) { Text("Done", style = MaterialTheme.typography.titleMedium) }
         },
     )
 }
@@ -237,7 +289,11 @@ fun VideoPickerDialog(
             }
         },
         confirmButton = {
-            TextButton(onClick = onDismiss) { Text("Close") }
+            TextButton(
+                onClick = onDismiss,
+                contentPadding = DialogButtonPadding,
+                modifier = Modifier.heightIn(min = 48.dp),
+            ) { Text("Close", style = MaterialTheme.typography.titleMedium) }
         },
     )
 }

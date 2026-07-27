@@ -49,16 +49,21 @@ import androidx.compose.ui.input.pointer.changedToUp
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.positionChanged
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.platform.LocalViewConfiguration
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
+import android.content.res.Configuration
 import androidx.compose.ui.util.fastAny
 import androidx.compose.ui.util.fastForEach
+import androidx.compose.ui.graphics.painter.ColorPainter
 import coil3.compose.AsyncImage
+import coil3.request.CachePolicy
 import coil3.request.ImageRequest
+import coil3.request.crossfade
 import coil3.size.Size
 import com.mousy.myrandomgallery.data.model.GridMode
 import com.mousy.myrandomgallery.data.model.MediaItem
@@ -91,8 +96,14 @@ fun MediaGrid(
     hapticsEnabled: Boolean = true,
     modifier: Modifier = Modifier,
 ) {
+    val landscape = LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
+    // Landscape: denser columns so more than ~one row is visible.
+    val cols = remember(columns, landscape) {
+        val base = columns.coerceIn(1, 6)
+        if (landscape) (base + 2).coerceIn(3, 8) else base
+    }
     val thumbPx = with(LocalDensity.current) {
-        ((360.dp / columns.coerceIn(1, 6)).coerceIn(120.dp, 400.dp)).roundToPx()
+        ((360.dp / cols.coerceIn(1, 8)).coerceIn(96.dp, 400.dp)).roundToPx()
     }
     val scope = rememberCoroutineScope()
     val view = LocalView.current
@@ -101,9 +112,9 @@ fun MediaGrid(
     var dragAccumX by remember { mutableFloatStateOf(0f) }
     var dragAccumY by remember { mutableFloatStateOf(0f) }
     var dragAxis by remember { mutableIntStateOf(0) } // 0 none, 1 horizontal, 2 vertical
-    val cols = columns.coerceIn(1, 6)
 
     BoxWithConstraints(modifier = modifier.fillMaxSize()) {
+        // Pre-toggle (padded-on) values: 4dp gap, light content pad — no extra per-cell inset.
         val hSpacing = if (thumbnailPadding) 4.dp else 0.dp
         val vSpacing = if (thumbnailPadding) 4.dp else 0.dp
         val hPad = if (thumbnailPadding) 12.dp else 0.dp
@@ -372,19 +383,24 @@ private fun MediaGridCell(
 ) {
     val context = LocalContext.current
     val touchSlop = LocalViewConfiguration.current.touchSlop
-    val request = remember(item.uri, thumbPx) {
+    val placeholderColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f)
+    val placeholder = remember(placeholderColor) { ColorPainter(placeholderColor) }
+    val request = remember(item.uri, item.stableKey, thumbPx) {
         ImageRequest.Builder(context)
             .data(item.uri)
             .size(Size(thumbPx, thumbPx))
-            .memoryCacheKey("${item.stableKey}_$thumbPx")
-            .diskCacheKey(item.stableKey)
+            .memoryCacheKey("${item.stableKey}_thumb_$thumbPx")
+            .diskCacheKey("${item.stableKey}_thumb_$thumbPx")
+            .memoryCachePolicy(CachePolicy.ENABLED)
+            .diskCachePolicy(CachePolicy.ENABLED)
+            .crossfade(true)
             .build()
     }
+    // Pre-toggle look: 6dp corners, no extra per-cell padding (gap comes from grid spacing).
     val shape = if (rounded) RoundedCornerShape(6.dp) else RoundedCornerShape(0.dp)
     Box(
         modifier = Modifier
             .aspectRatio(1f)
-            .then(if (rounded) Modifier.padding(5.dp) else Modifier)
             .clip(shape)
             .then(
                 if (isSelected) Modifier.border(3.dp, MaterialTheme.colorScheme.primary, shape)
@@ -464,6 +480,8 @@ private fun MediaGridCell(
                 model = request,
                 contentDescription = item.displayName,
                 contentScale = ContentScale.Crop,
+                placeholder = placeholder,
+                error = placeholder,
                 modifier = Modifier.fillMaxSize(),
             )
         }

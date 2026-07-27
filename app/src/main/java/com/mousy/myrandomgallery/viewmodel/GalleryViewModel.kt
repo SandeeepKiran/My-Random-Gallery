@@ -22,6 +22,7 @@ import com.mousy.myrandomgallery.data.model.SnackMessage
 import com.mousy.myrandomgallery.data.model.TabFeatures
 import com.mousy.myrandomgallery.data.model.ThemeMode
 import com.mousy.myrandomgallery.data.preferences.SettingsRepository
+import com.mousy.myrandomgallery.data.model.sanitized
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -62,6 +63,10 @@ class GalleryViewModel(application: Application) : AndroidViewModel(application)
     private val _viewerReturnTab = MutableStateFlow(AppTab.GALLERY)
     /** True only when opened from the Slideshow tab (autoplay + timing controls). */
     private val _viewerSlideshowMode = MutableStateFlow(false)
+    /** Mute persists across viewer items. */
+    private val _viewerMuted = MutableStateFlow(false)
+    /** Bumps when user interacts with chrome so auto-hide timer resets. */
+    private val _viewerChromeNonce = MutableStateFlow(0)
     private val _speedMenuOpen = MutableStateFlow(false)
     private val _detailsOpen = MutableStateFlow(false)
     private val _customSpeedOpen = MutableStateFlow(false)
@@ -126,9 +131,11 @@ class GalleryViewModel(application: Application) : AndroidViewModel(application)
         _viewerSlideshowMode,
         _confirmResetSettings,
         _recentTypeMenuOpen,
+        _viewerMuted,
+        _viewerChromeNonce,
     ) { values ->
         buildUiState(
-            settings = values[0] as AppSettings,
+            settings = (values[0] as AppSettings).sanitized(),
             allMedia = values[1] as List<MediaItem>,
             folderFavourites = values[2] as List<MediaItem>,
             shuffleOrder = values[3] as List<String>,
@@ -158,20 +165,22 @@ class GalleryViewModel(application: Application) : AndroidViewModel(application)
             viewerSlideshowMode = values[27] as Boolean,
             confirmReset = values[28] as Boolean,
             recentTypeMenu = values[29] as Boolean,
+            viewerMuted = values[30] as Boolean,
+            viewerChromeNonce = values[31] as Int,
         )
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), GalleryUiState())
 
     init {
         viewModelScope.launch {
             settingsRepo.settingsFlow.collect { s ->
-                _settings.value = s
+                _settings.value = s.sanitized()
                 if (!shuffleRestored && s.shuffleHistoryEncoded.isNotBlank()) {
-                    restoreShuffleHistory(s)
+                    restoreShuffleHistory(s.sanitized())
                     shuffleRestored = true
                 } else if (!shuffleRestored) {
                     shuffleRestored = true
                 }
-                val key = mediaScanKey(s)
+                val key = mediaScanKey(s.sanitized())
                 if (key != lastMediaScanKey) {
                     lastMediaScanKey = key
                     refreshMedia()
@@ -496,7 +505,10 @@ class GalleryViewModel(application: Application) : AndroidViewModel(application)
         _speedMenuOpen.value = false
         _detailsOpen.value = false
         _viewerSlideshowMode.value = slideshowMode
-        _currentTab.value = AppTab.SLIDESHOW
+        // View mode keeps the source tab selected; slideshow mode selects Slideshow.
+        if (slideshowMode) {
+            _currentTab.value = AppTab.SLIDESHOW
+        }
         _viewerPlaying.value = slideshowMode && autoPlay
         if (_viewerPlaying.value) scheduleSlideshow() else slideshowJob?.cancel()
     }
@@ -563,7 +575,16 @@ class GalleryViewModel(application: Application) : AndroidViewModel(application)
         }
     }
 
-    fun toggleViewerChrome() { _viewerChrome.value = !_viewerChrome.value }
+    fun toggleViewerChrome() {
+        _viewerChrome.value = !_viewerChrome.value
+        if (_viewerChrome.value) _viewerChromeNonce.value++
+    }
+
+    fun noteViewerInteraction() {
+        if (_viewerChrome.value) _viewerChromeNonce.value++
+    }
+
+    fun toggleViewerMute() { _viewerMuted.value = !_viewerMuted.value }
 
     fun viewerNavigate(delta: Int) {
         val list = _viewerList.value.filter { it !in _deletedKeys.value }
@@ -573,6 +594,36 @@ class GalleryViewModel(application: Application) : AndroidViewModel(application)
         if (idx > list.lastIndex) idx = 0
         _viewerIndex.value = idx
         _viewerList.value = list
+        // Keep chrome vanished if it was vanished — do not force-show on advance.
+        if (_viewerPlaying.value) scheduleSlideshow()
+    }
+
+    /** Called when a video finishes in the viewer (loop disabled). */
+    fun onViewerVideoEnded() {
+        if (_viewerSlideshowMode.value) {
+            // Slideshow + no loop → advance to next item
+            advanceSlideshowAfterVideo()
+        }
+        // View mode + no loop → stop (ExoPlayer already stopped)
+    }
+
+    private fun advanceSlideshowAfterVideo() {
+        val list = _viewerList.value.filter { it !in _deletedKeys.value }
+        if (list.isEmpty()) {
+            _viewerPlaying.value = false
+            return
+        }
+        var next = _viewerIndex.value + 1
+        val s = _settings.value.sanitized()
+        if (next >= list.size) {
+            if (s.dontLoop) {
+                // At end of list and "don't loop" — stop slideshow
+                _viewerPlaying.value = false
+                return
+            }
+            next = 0
+        }
+        _viewerIndex.value = next
         if (_viewerPlaying.value) scheduleSlideshow()
     }
 
@@ -988,12 +1039,19 @@ class GalleryViewModel(application: Application) : AndroidViewModel(application)
     }
 
     fun toggleMultiVideoLandscape() {
-        _multiVideo.update { it.copy(landscape = !it.landscape) }
-        showMultiVideoOverlay()
+        _multiVideo.update {
+            val entering = !it.landscape
+            it.copy(
+                landscape = entering,
+                chromeVisible = if (entering) false else true,
+                overlayVisible = !entering,
+            )
+        }
+        if (!_multiVideo.value.landscape) showMultiVideoOverlay()
     }
 
     fun exitMultiVideoLandscape() {
-        _multiVideo.update { it.copy(landscape = false) }
+        _multiVideo.update { it.copy(landscape = false, chromeVisible = true) }
         showMultiVideoOverlay()
     }
 
@@ -1124,12 +1182,16 @@ class GalleryViewModel(application: Application) : AndroidViewModel(application)
 
     private fun scheduleSlideshow() {
         slideshowJob?.cancel()
-        val s = _settings.value
-        if (!_viewerPlaying.value || !_viewerOpen.value) return
+        val s = _settings.value.sanitized()
+        if (!_viewerPlaying.value || !_viewerOpen.value || !_viewerSlideshowMode.value) return
         if (s.speedIdx == SlideshowSpeeds.OFF_INDEX) return
         val item = currentViewerItem()
+        // Videos: either loop in place (dontLoop=false) or advance on STATE_ENDED.
+        // Do not also fire a duration-based timer (double-advance).
+        if (item?.mediaType == MediaType.VIDEO || item?.mediaType == MediaType.AUDIO) {
+            return
+        }
         val delayMs = when {
-            item?.mediaType == MediaType.VIDEO && item.durationMs > 0 -> item.durationMs
             s.speedIdx == SlideshowSpeeds.CUSTOM_INDEX -> s.customMs
             else -> SlideshowSpeeds.speeds.getOrNull(s.speedIdx)?.ms ?: 5_000L
         }
@@ -1155,7 +1217,7 @@ class GalleryViewModel(application: Application) : AndroidViewModel(application)
     }
 
     private fun persistSettings(block: (AppSettings) -> AppSettings) {
-        val updated = block(_settings.value)
+        val updated = block(_settings.value.sanitized()).sanitized()
         _settings.value = updated
         viewModelScope.launch {
             settingsRepo.update { updated }
@@ -1245,27 +1307,30 @@ class GalleryViewModel(application: Application) : AndroidViewModel(application)
         viewerSlideshowMode: Boolean,
         confirmReset: Boolean,
         recentTypeMenu: Boolean,
+        viewerMuted: Boolean = false,
+        viewerChromeNonce: Int = 0,
     ): GalleryUiState {
+        val safeSettings = settings.sanitized()
         val mediaMap = allMedia.associateBy { it.stableKey }
         val folderMap = folderFavourites.associateBy { it.stableKey }
         val lookup = mediaMap + folderMap
         val liveKeys = shuffleOrder.filter { it !in deleted && mediaMap.containsKey(it) } +
             allMedia.map { it.stableKey }.filter { it !in deleted && it !in shuffleOrder.toSet() }
 
-        val gallery = liveKeys.mapNotNull { mediaMap[it] }.filter { passType(it, settings) }
-        val favWindow = FavWindow.normalize(settings.favWindow)
-        val recentWindow = FavWindow.normalize(settings.recentWindow)
+        val gallery = liveKeys.mapNotNull { mediaMap[it] }.filter { passType(it, safeSettings) }
+        val favWindow = FavWindow.normalize(safeSettings.favWindow)
+        val recentWindow = FavWindow.normalize(safeSettings.recentWindow)
         val favourites = try {
-            if (settings.copyFavs && settings.copyFavTreeUri.isNotBlank()) {
+            if (safeSettings.copyFavs && safeSettings.copyFavTreeUri.isNotBlank()) {
                 folderFavourites.filter { item ->
                     item.stableKey !in deleted &&
-                        passFavType(item, settings.favTypes) &&
+                        passFavType(item, safeSettings.favTypes) &&
                         favWindow.matches(item.ageDays())
                 }
             } else {
                 liveKeys.mapNotNull { mediaMap[it] }.filter { item ->
-                    settings.favIds.contains(item.stableKey) &&
-                        passFavType(item, settings.favTypes) &&
+                    safeSettings.favIds.contains(item.stableKey) &&
+                        passFavType(item, safeSettings.favTypes) &&
                         favWindow.matches(item.ageDays())
                 }
             }
@@ -1276,8 +1341,8 @@ class GalleryViewModel(application: Application) : AndroidViewModel(application)
         val recent = try {
             liveKeys.mapNotNull { mediaMap[it] }
                 .filter { item ->
-                    passType(item, settings) &&
-                        passFavType(item, settings.recentTypes) &&
+                    passType(item, safeSettings) &&
+                        passFavType(item, safeSettings.recentTypes) &&
                         recentWindow.matches(item.ageDays())
                 }
                 .sortedBy { it.ageDays() }
@@ -1286,9 +1351,9 @@ class GalleryViewModel(application: Application) : AndroidViewModel(application)
             emptyList()
         }
         val videos = allMedia.filter {
-            (it.mediaType == MediaType.VIDEO || it.mediaType == MediaType.AUDIO) && passType(it, settings)
+            (it.mediaType == MediaType.VIDEO || it.mediaType == MediaType.AUDIO) && passType(it, safeSettings)
         }
-        val selectedNormalized = MediaRepository.mediaStoreFolderKeys(settings.selectedFolders)
+        val selectedNormalized = MediaRepository.mediaStoreFolderKeys(safeSettings.selectedFolders)
         val albums = discovered.filter {
             MediaRepository.folderMatchesSelection(it.path, selectedNormalized)
         }
@@ -1297,16 +1362,16 @@ class GalleryViewModel(application: Application) : AndroidViewModel(application)
             gallery.filter { MediaRepository.folderMatchesSelection(it.folderPath, albumNorm) }
         } else emptyList()
 
-        val noFolders = MediaRepository.mediaStoreFolderKeys(settings.selectedFolders).isEmpty() &&
-            settings.safTreeUris.isEmpty()
+        val noFolders = MediaRepository.mediaStoreFolderKeys(safeSettings.selectedFolders).isEmpty() &&
+            safeSettings.safTreeUris.isEmpty()
 
         val viewerLive = viewerList.filter { it !in deleted }
         val viewerItem = viewerLive.getOrNull(viewerIndex)?.let { lookup[it] }
 
-        val visibleTabs = settings.tabOrder.filter { tab -> tab !in settings.tabHidden }
+        val visibleTabs = safeSettings.tabOrder.filter { t -> t !in safeSettings.tabHidden }
 
         return GalleryUiState(
-            settings = settings,
+            settings = safeSettings,
             currentTab = tab,
             visibleTabs = visibleTabs,
             gallery = gallery,
@@ -1327,6 +1392,8 @@ class GalleryViewModel(application: Application) : AndroidViewModel(application)
             viewerChrome = viewerChrome,
             viewerMenuOpen = viewerMenuOpen,
             viewerSlideshowMode = viewerSlideshowMode,
+            viewerMuted = viewerMuted,
+            viewerChromeNonce = viewerChromeNonce,
             speedMenuOpen = speedMenuOpen,
             detailsOpen = detailsOpen,
             customSpeedOpen = customSpeedOpen,
@@ -1376,6 +1443,8 @@ data class GalleryUiState(
     val viewerChrome: Boolean = true,
     val viewerMenuOpen: Boolean = false,
     val viewerSlideshowMode: Boolean = false,
+    val viewerMuted: Boolean = false,
+    val viewerChromeNonce: Int = 0,
     val speedMenuOpen: Boolean = false,
     val detailsOpen: Boolean = false,
     val customSpeedOpen: Boolean = false,

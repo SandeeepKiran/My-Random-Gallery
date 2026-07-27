@@ -16,8 +16,8 @@ enum class AppTab(val label: String, val icon: ImageVector, val locked: Boolean 
     RECENT("Recent", Icons.Default.Schedule),
     GALLERY("Gallery", Icons.Default.Shuffle, locked = true),
     SLIDESHOW("Slideshow", Icons.Default.Slideshow),
-    MULTIVIDEO("Videos", Icons.Default.VideoLibrary),
     ALBUM("Albums", Icons.Default.PhotoAlbum),
+    MULTIVIDEO("Videos", Icons.Default.VideoLibrary),
     SETTINGS("More", Icons.Default.MoreHoriz, locked = true);
 
     val key: String get() = name.lowercase()
@@ -25,9 +25,12 @@ enum class AppTab(val label: String, val icon: ImageVector, val locked: Boolean 
     companion object {
         fun fromKey(key: String): AppTab? = entries.find { it.key == key }
 
-        /** Full tab strip including optional Multi-Video / Album (hidden by default). */
+        /**
+         * Default strip ending ... Slideshow  /  Albums  /  Videos  /  More.
+         * Gallery / More stay locked; Albums & Videos stay hidden by default.
+         */
         val defaultOrder: List<AppTab> = listOf(
-            FAV, RECENT, GALLERY, SLIDESHOW, MULTIVIDEO, ALBUM, SETTINGS,
+            FAV, RECENT, GALLERY, SLIDESHOW, ALBUM, MULTIVIDEO, SETTINGS,
         )
 
         /** Optional tabs start unchecked in Settings tab-order UI. */
@@ -107,7 +110,7 @@ data class AppSettings(
     val selectedFolders: Set<String> = emptySet(),
     val safTreeUris: Set<String> = emptySet(),
     val fileTypes: Map<String, Boolean> = emptyMap(),
-    /** Extension → count of files seen in last scan (for Settings UI). */
+    /** Extension - count of files seen in last scan (for Settings UI). */
     val discoveredFileTypeCounts: Map<String, Int> = emptyMap(),
     val favIds: Set<String> = emptySet(),
     val dontLoop: Boolean = false,
@@ -142,7 +145,7 @@ data class AppSettings(
     val shuffleHistoryEncoded: String = "",
     val shuffleHistoryIndex: Int = 0,
 ) {
-    /** Effective “delete disabled” — either dedicated or legacy toggle. */
+    /** Effective “delete disabled” - either dedicated or legacy toggle. */
     val deletesDisabled: Boolean get() = disableDeleteOptions || disableEditDelete
 
     companion object {
@@ -160,15 +163,15 @@ data class AppSettings(
 /**
  * Date window for Favourites / Recents filters.
  *
- * Important: always resolve through [normalize] / companion [options] so Days(365)
- * is never an orphan instance that breaks index lookups.
+ * Important: [options] is lazy - a sealed-class companion that eagerly lists
+ * nested objects can leave null entries (init-order), which crashed the calendar menu.
  */
 sealed class FavWindow {
     data object ALL : FavWindow()
     data class Days(val days: Int) : FavWindow()
 
     fun label(): String = when (this) {
-        ALL -> "All time"
+        is ALL -> "All time"
         is Days -> when (days) {
             365 -> "1 year"
             else -> "$days days"
@@ -177,7 +180,7 @@ sealed class FavWindow {
 
     /** Compact label for filter buttons (avoids overflow on narrow screens). */
     fun shortLabel(): String = when (this) {
-        ALL -> "All time"
+        is ALL -> "All time"
         is Days -> when (days) {
             365 -> "1y"
             else -> "${days}d"
@@ -185,7 +188,7 @@ sealed class FavWindow {
     }
 
     fun matches(ageDays: Int): Boolean = when (this) {
-        ALL -> true
+        is ALL -> true
         is Days -> {
             val limit = days.coerceIn(1, 3650)
             val age = ageDays.coerceAtLeast(0)
@@ -194,59 +197,84 @@ sealed class FavWindow {
     }
 
     fun sameAs(other: FavWindow): Boolean = when (this) {
-        ALL -> other is ALL
+        is ALL -> other is ALL
         is Days -> other is Days && other.days == days
     }
 
     /** Day count for legacy Recents sync; null means "all time". */
     fun asRecentDays(): Int? = when (this) {
-        ALL -> null
+        is ALL -> null
         is Days -> days.coerceIn(1, 3650)
     }
 
     /** Stable encode key used in DataStore. */
     fun encode(): String = when (this) {
-        ALL -> "all"
+        is ALL -> "all"
         is Days -> "days:${days.coerceIn(1, 3650)}"
     }
 
     companion object {
-        val options: List<FavWindow> = listOf(
-            ALL, Days(7), Days(14), Days(30), Days(60), Days(90), Days(365),
-        )
+        /**
+         * Lazy so nested `ALL` / `Days` are fully initialized before the list is built.
+         * Eager `listOf(ALL, ...)` in this companion previously produced null entries at runtime.
+         */
+        val options: List<FavWindow> by lazy {
+            listOf(
+                FavWindow.ALL,
+                FavWindow.Days(7),
+                FavWindow.Days(14),
+                FavWindow.Days(30),
+                FavWindow.Days(60),
+                FavWindow.Days(90),
+                FavWindow.Days(365),
+            )
+        }
 
-        /** Map any window onto the canonical companion instance (fixes Days(365) identity bugs). */
-        fun normalize(window: FavWindow): FavWindow = when (window) {
-            ALL -> ALL
-            is Days -> options.filterIsInstance<Days>().find { it.days == window.days }
-                ?: Days(window.days.coerceIn(1, 3650))
+        /** Map any window onto a canonical instance; null-safe against corrupt settings. */
+        fun normalize(window: FavWindow?): FavWindow {
+            val w = window ?: return FavWindow.ALL
+            return when (w) {
+                is ALL -> FavWindow.ALL
+                is Days -> options.filterIsInstance<Days>().find { it.days == w.days }
+                    ?: FavWindow.Days(w.days.coerceIn(1, 3650))
+            }
         }
 
         fun fromRecentDays(days: Int): FavWindow {
             val d = days.coerceIn(1, 3650)
-            return options.filterIsInstance<Days>().find { it.days == d } ?: Days(d)
+            return options.filterIsInstance<Days>().find { it.days == d } ?: FavWindow.Days(d)
         }
 
         fun decode(raw: String?): FavWindow {
-            if (raw.isNullOrBlank()) return ALL
+            if (raw.isNullOrBlank()) return FavWindow.ALL
             return when {
-                raw.equals("all", ignoreCase = true) -> ALL
+                raw.equals("all", ignoreCase = true) -> FavWindow.ALL
                 raw.startsWith("days:", ignoreCase = true) -> {
                     val days = raw.substringAfter(':').toIntOrNull()?.coerceIn(1, 3650) ?: 30
                     fromRecentDays(days)
                 }
                 // Numeric legacy
                 raw.toIntOrNull() != null -> fromRecentDays(raw.toInt())
-                else -> ALL
+                else -> FavWindow.ALL
             }
         }
 
-        fun cycle(current: FavWindow): FavWindow {
+        fun cycle(current: FavWindow?): FavWindow {
             val canonical = normalize(current)
             val idx = options.indexOfFirst { it.sameAs(canonical) }.takeIf { it >= 0 } ?: 0
-            return options.getOrElse((idx + 1) % options.size) { ALL }
+            return options.getOrElse((idx + 1) % options.size) { FavWindow.ALL }
         }
     }
+}
+
+/** Repair null/corrupt window fields so [AppSettings.copy] never NPEs. */
+fun AppSettings.sanitized(): AppSettings {
+    val safeFav = (favWindow as FavWindow?) ?: FavWindow.ALL
+    val safeRecent = (recentWindow as FavWindow?) ?: FavWindow.Days(30)
+    return copy(
+        favWindow = FavWindow.normalize(safeFav),
+        recentWindow = FavWindow.normalize(safeRecent),
+    )
 }
 
 object SlideshowSpeeds {

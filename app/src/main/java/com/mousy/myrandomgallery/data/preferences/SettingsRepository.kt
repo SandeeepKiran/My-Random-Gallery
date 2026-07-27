@@ -19,6 +19,7 @@ import com.mousy.myrandomgallery.data.model.GridMode
 import com.mousy.myrandomgallery.data.model.SlideshowSpeeds
 import com.mousy.myrandomgallery.data.model.TabFeatures
 import com.mousy.myrandomgallery.data.model.ThemeMode
+import com.mousy.myrandomgallery.data.model.sanitized
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
@@ -87,8 +88,8 @@ class SettingsRepository(private val context: Context) {
         prefs[Keys.SPEED_IDX] = updated.speedIdx
         prefs[Keys.CUSTOM_MS] = updated.customMs
         prefs[Keys.RECENT_WINDOW] = updated.recentWindow.asRecentDays() ?: updated.recentWindowDays
-        prefs[Keys.FAV_WINDOW] = updated.favWindow.encode()
-        prefs[Keys.RECENT_WINDOW_ENC] = updated.recentWindow.encode()
+        prefs[Keys.FAV_WINDOW] = FavWindow.normalize(updated.favWindow).encode()
+        prefs[Keys.RECENT_WINDOW_ENC] = FavWindow.normalize(updated.recentWindow).encode()
         prefs[Keys.FAV_TYPE_PHOTO] = updated.favTypes.photo
         prefs[Keys.FAV_TYPE_VIDEO] = updated.favTypes.video
         prefs[Keys.FAV_TYPE_GIF] = updated.favTypes.gif
@@ -179,7 +180,7 @@ class SettingsRepository(private val context: Context) {
             recentTypes = recentTypes,
             shuffleHistoryEncoded = prefs[Keys.SHUFFLE_HISTORY] ?: "",
             shuffleHistoryIndex = prefs[Keys.SHUFFLE_HISTORY_INDEX] ?: 0,
-        )
+        ).sanitized()
     }
 
     private object Keys {

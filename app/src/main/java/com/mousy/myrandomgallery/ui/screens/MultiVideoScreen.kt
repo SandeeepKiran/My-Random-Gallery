@@ -154,29 +154,66 @@ fun MultiVideoScreen(
                 BoxWithConstraints(modifier = Modifier.weight(1f)) {
                     val cols = if (state.count == 4) 2 else 1
                     val rows = if (state.count == 4) 2 else state.count
-                    val cellHeight = if (state.landscape) maxHeight / rows else null
-                    LazyVerticalGrid(
-                        columns = GridCells.Fixed(cols),
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .then(if (state.landscape) Modifier else Modifier.padding(top = 12.dp)),
-                        horizontalArrangement = Arrangement.spacedBy(if (state.landscape) 0.dp else 14.dp),
-                        verticalArrangement = Arrangement.spacedBy(if (state.landscape) 0.dp else 14.dp),
-                    ) {
-                        itemsIndexed(state.cells.take(state.count)) { index, cell ->
-                            MultiVideoCellCard(
-                                cell = cell,
-                                videoUri = cell.uri?.let { Uri.parse(it) }
-                                    ?: videos.find { it.id == cell.mediaId }?.uri,
-                                overlayVisible = state.overlayVisible && (!state.landscape || state.chromeVisible),
-                                landscape = state.landscape,
-                                cellHeight = cellHeight,
-                                onTap = { onCellTap(index) },
-                                onTogglePlay = { onTogglePlay(index) },
-                                onToggleMute = { onToggleMute(index) },
-                                onChoose = { onChooseVideo(index) },
-                                onProgress = { p -> onProgress(index, p) },
-                            )
+                    if (state.landscape) {
+                        // True fullscreen quadrants — no gaps, each cell fills its share.
+                        Column(modifier = Modifier.fillMaxSize()) {
+                            repeat(rows) { row ->
+                                Row(modifier = Modifier.weight(1f).fillMaxWidth()) {
+                                    repeat(cols) { col ->
+                                        val index = row * cols + col
+                                        if (index < state.count) {
+                                            val cell = state.cells[index]
+                                            Box(modifier = Modifier.weight(1f).fillMaxSize()) {
+                                                MultiVideoCellCard(
+                                                    cell = cell,
+                                                    videoUri = cell.uri?.let { Uri.parse(it) }
+                                                        ?: videos.find { it.id == cell.mediaId }?.uri,
+                                                    overlayVisible = state.overlayVisible && state.chromeVisible,
+                                                    landscape = true,
+                                                    cellHeight = null,
+                                                    fillQuadrant = true,
+                                                    onTap = { onCellTap(index) },
+                                                    onTogglePlay = { onTogglePlay(index) },
+                                                    onToggleMute = { onToggleMute(index) },
+                                                    onChoose = { onChooseVideo(index) },
+                                                    onProgress = { p -> onProgress(index, p) },
+                                                )
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    } else {
+                        LazyVerticalGrid(
+                            columns = GridCells.Fixed(cols),
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .padding(top = 12.dp),
+                            horizontalArrangement = Arrangement.spacedBy(14.dp),
+                            verticalArrangement = Arrangement.spacedBy(14.dp),
+                        ) {
+                            itemsIndexed(
+                                items = state.cells.take(state.count),
+                                key = { index, cell ->
+                                    "mv_${index}_${cell.mediaId}_${cell.uri}"
+                                },
+                            ) { index, cell ->
+                                MultiVideoCellCard(
+                                    cell = cell,
+                                    videoUri = cell.uri?.let { Uri.parse(it) }
+                                        ?: videos.find { it.id == cell.mediaId }?.uri,
+                                    overlayVisible = state.overlayVisible,
+                                    landscape = false,
+                                    cellHeight = null,
+                                    fillQuadrant = false,
+                                    onTap = { onCellTap(index) },
+                                    onTogglePlay = { onTogglePlay(index) },
+                                    onToggleMute = { onToggleMute(index) },
+                                    onChoose = { onChooseVideo(index) },
+                                    onProgress = { p -> onProgress(index, p) },
+                                )
+                            }
                         }
                     }
                 }
@@ -187,7 +224,7 @@ fun MultiVideoScreen(
             Surface(
                 onClick = onExitLandscape,
                 shape = MaterialTheme.shapes.large,
-                color = MaterialTheme.colorScheme.secondaryContainer,
+                color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.9f),
                 modifier = Modifier
                     .align(Alignment.TopStart)
                     .padding(12.dp),
@@ -211,6 +248,7 @@ private fun MultiVideoCellCard(
     overlayVisible: Boolean,
     landscape: Boolean,
     cellHeight: androidx.compose.ui.unit.Dp?,
+    fillQuadrant: Boolean = false,
     onTap: () -> Unit,
     onTogglePlay: () -> Unit,
     onToggleMute: () -> Unit,
@@ -219,15 +257,29 @@ private fun MultiVideoCellCard(
 ) {
     val hasVideo = videoUri != null
     Surface(
-        shape = if (landscape) androidx.compose.foundation.shape.RoundedCornerShape(0.dp) else MaterialTheme.shapes.large,
-        tonalElevation = if (landscape) 0.dp else 2.dp,
-        modifier = cellHeight?.let { Modifier.height(it) } ?: Modifier,
+        shape = if (landscape || fillQuadrant) {
+            androidx.compose.foundation.shape.RoundedCornerShape(0.dp)
+        } else {
+            MaterialTheme.shapes.large
+        },
+        tonalElevation = if (landscape || fillQuadrant) 0.dp else 2.dp,
+        modifier = when {
+            fillQuadrant -> Modifier.fillMaxSize()
+            cellHeight != null -> Modifier.height(cellHeight)
+            else -> Modifier
+        },
     ) {
-        Column {
+        Column(modifier = if (fillQuadrant) Modifier.fillMaxSize() else Modifier) {
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .then(if (landscape) Modifier.weight(1f) else Modifier.aspectRatio(16f / 9f))
+                    .then(
+                        when {
+                            fillQuadrant -> Modifier.weight(1f).fillMaxSize()
+                            landscape -> Modifier.weight(1f)
+                            else -> Modifier.aspectRatio(16f / 9f)
+                        },
+                    )
                     .clickable(onClick = onTap),
                 contentAlignment = Alignment.Center,
             ) {
@@ -267,7 +319,7 @@ private fun MultiVideoCellCard(
                     )
                 }
             }
-            if (overlayVisible && hasVideo) {
+            if (overlayVisible && hasVideo && !fillQuadrant) {
                 Row(
                     modifier = Modifier.padding(8.dp),
                     verticalAlignment = Alignment.CenterVertically,
@@ -336,6 +388,7 @@ private fun MultiVideoPlayer(
             PlayerView(ctx).apply {
                 this.player = player
                 useController = false
+                resizeMode = androidx.media3.ui.AspectRatioFrameLayout.RESIZE_MODE_ZOOM
                 layoutParams = ViewGroup.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT,
                     ViewGroup.LayoutParams.MATCH_PARENT,
