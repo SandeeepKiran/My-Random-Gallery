@@ -17,6 +17,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalView
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.mousy.myrandomgallery.data.model.AppTab
@@ -28,6 +29,7 @@ import com.mousy.myrandomgallery.ui.components.DetailsDialog
 import com.mousy.myrandomgallery.ui.components.FullscreenViewer
 import com.mousy.myrandomgallery.ui.components.GallerySnackbarHost
 import com.mousy.myrandomgallery.ui.components.HiddenFoldersDialog
+import com.mousy.myrandomgallery.ui.components.ResetSettingsConfirmDialog
 import com.mousy.myrandomgallery.ui.components.SelectionBar
 import com.mousy.myrandomgallery.ui.components.VideoPickerDialog
 import com.mousy.myrandomgallery.ui.navigation.MainScaffold
@@ -37,6 +39,8 @@ import com.mousy.myrandomgallery.ui.screens.GalleryScreen
 import com.mousy.myrandomgallery.ui.screens.MultiVideoScreen
 import com.mousy.myrandomgallery.ui.screens.RecentScreen
 import com.mousy.myrandomgallery.ui.screens.SettingsScreen
+import com.mousy.myrandomgallery.util.GalleryHaptics
+import com.mousy.myrandomgallery.util.LogCapture
 import com.mousy.myrandomgallery.viewmodel.GalleryViewModel
 
 @Composable
@@ -47,6 +51,12 @@ fun GalleryApp(
     val state by viewModel.uiState.collectAsStateWithLifecycle()
     val snackbarHostState = remember { SnackbarHostState() }
     val context = LocalContext.current
+    val view = LocalView.current
+    val appVersion = remember {
+        runCatching {
+            context.packageManager.getPackageInfo(context.packageName, 0).versionName ?: "1.0.0"
+        }.getOrDefault("1.0.0")
+    }
 
     val backEnabled = state.viewerOpen ||
         state.albumOpen != null ||
@@ -54,6 +64,7 @@ fun GalleryApp(
         state.detailsOpen ||
         state.customSpeedOpen ||
         state.confirmDeleteKeys != null ||
+        state.confirmResetSettings ||
         state.hiddenFoldersDialog ||
         state.multiVideo.pickerIndex != null ||
         state.viewerMenuOpen ||
@@ -88,6 +99,36 @@ fun GalleryApp(
         viewModel.importSettingsOrFavourites(uri)
     }
 
+    var pendingPickerIndex = remember { intArrayOf(-1) }
+
+    val multiPickGallery = rememberLauncherForActivityResult(
+        ActivityResultContracts.GetContent(),
+    ) { uri ->
+        val idx = pendingPickerIndex[0]
+        if (uri == null || idx < 0) return@rememberLauncherForActivityResult
+        val mime = context.contentResolver.getType(uri).orEmpty()
+        val name = uri.lastPathSegment
+        viewModel.assignMultiVideoUri(idx, uri.toString(), name, mime.startsWith("audio/"))
+        pendingPickerIndex[0] = -1
+    }
+
+    val multiPickFiles = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocument(),
+    ) { uri ->
+        val idx = pendingPickerIndex[0]
+        if (uri == null || idx < 0) return@rememberLauncherForActivityResult
+        runCatching {
+            context.contentResolver.takePersistableUriPermission(
+                uri,
+                Intent.FLAG_GRANT_READ_URI_PERMISSION,
+            )
+        }
+        val mime = context.contentResolver.getType(uri).orEmpty()
+        val name = uri.lastPathSegment
+        viewModel.assignMultiVideoUri(idx, uri.toString(), name, mime.startsWith("audio/"))
+        pendingPickerIndex[0] = -1
+    }
+
     // Multi-Video landscape lock wins; otherwise allow sensor rotation while viewing a video.
     LaunchedEffect(
         state.multiVideo.landscape,
@@ -110,21 +151,34 @@ fun GalleryApp(
             viewModel.toggleSelect(item.stableKey)
             return
         }
-        viewModel.openViewer(list.map { it.stableKey }, list.indexOf(item))
+        viewModel.openViewer(list.map { it.stableKey }, list.indexOf(item), slideshowMode = false)
     }
+
+    val hideBottomBar = (state.viewerOpen && !state.viewerChrome) ||
+        (state.currentTab == AppTab.MULTIVIDEO && state.multiVideo.landscape && !state.multiVideo.chromeVisible)
 
     MainScaffold(
         currentTab = state.currentTab,
         visibleTabs = state.visibleTabs,
         viewerOpen = state.viewerOpen,
         selectMode = state.selectMode,
+        bottomBarVisible = !hideBottomBar,
         selectionBar = {
             SelectionBar(
                 count = state.selectedKeys.size,
-                deleteEnabled = !state.settings.disableEditDelete,
+                deleteEnabled = !state.settings.deletesDisabled,
                 onExit = viewModel::exitSelectMode,
-                onFavourite = viewModel::favouriteSelected,
-                onDelete = viewModel::deleteSelected,
+                onFavourite = {
+                    GalleryHaptics.confirm(view, state.settings.hapticsEnabled)
+                    viewModel.favouriteSelected()
+                },
+                onDelete = {
+                    if (state.settings.deletesDisabled) {
+                        viewModel.deleteSelected()
+                    } else {
+                        viewModel.deleteSelected()
+                    }
+                },
             )
         },
         snackbarHost = {
@@ -146,11 +200,16 @@ fun GalleryApp(
                     noFolders = state.noFolders,
                     favouriteKeys = state.settings.favIds,
                     selectedKeys = state.selectedKeys,
+                    thumbnailPadding = state.settings.thumbnailPadding,
+                    hapticsEnabled = state.settings.hapticsEnabled,
                     onToggleGridMode = viewModel::toggleGridMode,
                     onCycleColumns = viewModel::cycleColumns,
                     onShuffle = { viewModel.shuffleGrid() },
                     onItemClick = { handleItemClick(it, state.gallery) },
-                    onItemDoubleTap = { viewModel.toggleFavourite(it.stableKey) },
+                    onItemDoubleTap = {
+                        GalleryHaptics.confirm(view, state.settings.hapticsEnabled)
+                        viewModel.toggleFavourite(it.stableKey)
+                    },
                     onItemLongPress = { viewModel.enterSelectMode(it.stableKey) },
                     onSwipeShuffle = viewModel::onGridSwipe,
                     onPinchColumns = viewModel::adjustColumnsFromPinch,
@@ -167,9 +226,12 @@ fun GalleryApp(
                     favTypeMenuOpen = state.favTypeMenuOpen,
                     onToggleFavTypeMenu = viewModel::toggleFavTypeMenu,
                     onToggleFavType = viewModel::toggleFavType,
-                    onSelectFavWindow = viewModel::setListWindow,
+                    onSelectFavWindow = viewModel::setFavWindow,
                     onItemClick = { handleItemClick(it, state.favourites) },
-                    onItemDoubleTap = { viewModel.toggleFavourite(it.stableKey) },
+                    onItemDoubleTap = {
+                        GalleryHaptics.confirm(view, state.settings.hapticsEnabled)
+                        viewModel.toggleFavourite(it.stableKey)
+                    },
                     onItemLongPress = { viewModel.enterSelectMode(it.stableKey) },
                     onPinchColumns = viewModel::adjustColumnsFromPinch,
                     onGoSettings = { viewModel.selectTab(AppTab.SETTINGS) },
@@ -180,14 +242,17 @@ fun GalleryApp(
                     noFolders = state.noFolders,
                     favouriteKeys = state.settings.favIds,
                     selectedKeys = state.selectedKeys,
-                    listTypes = state.settings.favTypes,
-                    listWindow = state.settings.favWindow,
-                    typeMenuOpen = state.favTypeMenuOpen,
-                    onToggleTypeMenu = viewModel::toggleFavTypeMenu,
-                    onToggleType = viewModel::toggleFavType,
-                    onSelectWindow = viewModel::setListWindow,
+                    listTypes = state.settings.recentTypes,
+                    listWindow = state.settings.recentWindow,
+                    typeMenuOpen = state.recentTypeMenuOpen,
+                    onToggleTypeMenu = viewModel::toggleRecentTypeMenu,
+                    onToggleType = viewModel::toggleRecentType,
+                    onSelectWindow = viewModel::setRecentWindow,
                     onItemClick = { handleItemClick(it, state.recent) },
-                    onItemDoubleTap = { viewModel.toggleFavourite(it.stableKey) },
+                    onItemDoubleTap = {
+                        GalleryHaptics.confirm(view, state.settings.hapticsEnabled)
+                        viewModel.toggleFavourite(it.stableKey)
+                    },
                     onItemLongPress = { viewModel.enterSelectMode(it.stableKey) },
                     onPinchColumns = viewModel::adjustColumnsFromPinch,
                     onGoSettings = { viewModel.selectTab(AppTab.SETTINGS) },
@@ -230,6 +295,7 @@ fun GalleryApp(
                     settings = state.settings,
                     discoveredFolders = state.discoveredFolders,
                     collapsedGroups = state.collapsedGroups,
+                    appVersion = appVersion,
                     onToggleDark = viewModel::toggleTheme,
                     onToggleAmoled = viewModel::toggleAmoled,
                     onSetAccent = viewModel::setAccent,
@@ -271,6 +337,16 @@ fun GalleryApp(
                         )
                     },
                     onAddSafFolder = { safFolderLauncher.launch(null) },
+                    onResetSettings = viewModel::requestResetSettings,
+                    onShareLogs = {
+                        LogCapture.captureToCache(context).onSuccess { file ->
+                            context.startActivity(
+                                Intent.createChooser(LogCapture.shareIntent(context, file), "Share log"),
+                            )
+                        }.onFailure {
+                            viewModel.showSnack(it.message ?: "Could not capture log")
+                        }
+                    },
                     onOpenGithub = {
                         val url = context.getString(com.mousy.myrandomgallery.R.string.github_url)
                         runCatching {
@@ -311,8 +387,9 @@ fun GalleryApp(
                 speedIndex = state.settings.speedIdx,
                 customMs = state.settings.customMs,
                 isFavourite = state.viewerItem?.let { viewModel.isFavouriteItem(it) } == true,
-                disableSwipeDelete = state.settings.disableSwipeDelete || state.settings.disableEditDelete,
-                deleteEnabled = !state.settings.disableEditDelete,
+                disableSwipeDelete = state.settings.disableSwipeDelete || state.settings.deletesDisabled,
+                deleteEnabled = !state.settings.deletesDisabled,
+                slideshowMode = state.viewerSlideshowMode,
                 onClose = viewModel::closeViewer,
                 onToggleChrome = viewModel::toggleViewerChrome,
                 onNavigate = viewModel::viewerNavigate,
@@ -322,6 +399,7 @@ fun GalleryApp(
                 onToggleSpeedMenu = viewModel::toggleSpeedMenu,
                 onSpeedSelected = viewModel::setSpeedIndex,
                 onToggleFavourite = {
+                    GalleryHaptics.confirm(view, state.settings.hapticsEnabled)
                     state.viewerItem?.stableKey?.let(viewModel::toggleFavourite)
                 },
                 onShare = {
@@ -338,8 +416,18 @@ fun GalleryApp(
         state.confirmDeleteKeys?.let { keys ->
             DeleteConfirmDialog(
                 count = keys.size,
-                onConfirm = viewModel::confirmDelete,
+                onConfirm = {
+                    GalleryHaptics.confirm(view, state.settings.hapticsEnabled)
+                    viewModel.confirmDelete()
+                },
                 onDismiss = viewModel::cancelDelete,
+            )
+        }
+
+        if (state.confirmResetSettings) {
+            ResetSettingsConfirmDialog(
+                onConfirm = viewModel::confirmResetSettings,
+                onDismiss = viewModel::cancelResetSettings,
             )
         }
 
@@ -367,6 +455,14 @@ fun GalleryApp(
             VideoPickerDialog(
                 videos = state.videos,
                 onSelect = { viewModel.assignMultiVideo(pickerIndex, it) },
+                onPickGallery = {
+                    pendingPickerIndex[0] = pickerIndex
+                    multiPickGallery.launch("*/*")
+                },
+                onPickFiles = {
+                    pendingPickerIndex[0] = pickerIndex
+                    multiPickFiles.launch(arrayOf("video/*", "audio/*", "*/*"))
+                },
                 onDismiss = viewModel::closeMultiVideoPicker,
             )
         }

@@ -20,6 +20,7 @@ import com.mousy.myrandomgallery.data.model.SlideshowSpeeds
 import com.mousy.myrandomgallery.data.model.TabFeatures
 import com.mousy.myrandomgallery.data.model.ThemeMode
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 
 private val Context.dataStore: DataStore<Preferences> by preferencesDataStore(name = "my_random_gallery_settings")
@@ -34,34 +35,20 @@ class SettingsRepository(private val context: Context) {
         context.dataStore.edit { prefs ->
             val current = settingsFromPrefs(prefs)
             val updated = transform(current)
-            prefs[Keys.THEME_DARK] = updated.themeMode == ThemeMode.DARK
-            prefs[Keys.AMOLED] = updated.amoled
-            prefs[Keys.ACCENT] = updated.accent.key
-            prefs[Keys.COLUMNS] = updated.columns
-            prefs[Keys.GRID_SCROLL] = updated.gridMode == GridMode.SCROLL
-            prefs[Keys.SELECTED_FOLDERS] = updated.selectedFolders
-            prefs[Keys.SAF_TREE_URIS] = updated.safTreeUris
-            prefs[Keys.FILE_TYPES] = encodeFileTypes(updated.fileTypes)
-            prefs[Keys.FAV_IDS] = updated.favIds
-            prefs[Keys.DONT_LOOP] = updated.dontLoop
-            prefs[Keys.DISABLE_SWIPE_DELETE] = updated.disableSwipeDelete
-            prefs[Keys.DISABLE_EDIT_DELETE] = updated.disableEditDelete
-            prefs[Keys.COPY_FAVS] = updated.copyFavs
-            prefs[Keys.COPY_FAV_PATH] = updated.copyFavPath
-            prefs[Keys.COPY_FAV_TREE_URI] = updated.copyFavTreeUri
-            prefs[Keys.HIDDEN_FOLDERS] = encodeHiddenFolders(updated.hiddenFolders)
-            prefs[Keys.TAB_FEATURE_MV] = updated.tabFeatures.multivideo
-            prefs[Keys.TAB_FEATURE_ALBUM] = updated.tabFeatures.album
-            prefs[Keys.TAB_ORDER] = updated.tabOrder.joinToString(",") { it.key }
-            prefs[Keys.TAB_HIDDEN] = updated.tabHidden.joinToString(",") { it.key }
-            prefs[Keys.SPEED_IDX] = updated.speedIdx
-            prefs[Keys.CUSTOM_MS] = updated.customMs
-            prefs[Keys.RECENT_WINDOW] = updated.recentWindowDays
-            prefs[Keys.FAV_WINDOW] = encodeFavWindow(updated.favWindow)
-            prefs[Keys.FAV_TYPE_PHOTO] = updated.favTypes.photo
-            prefs[Keys.FAV_TYPE_VIDEO] = updated.favTypes.video
-            prefs[Keys.FAV_TYPE_GIF] = updated.favTypes.gif
+            writePrefs(prefs, updated)
         }
+    }
+
+    suspend fun resetToDefaults(keepFavourites: Boolean = true): AppSettings {
+        val previous = settingsFlow.first()
+        val defaults = AppSettings.defaults().let { d ->
+            if (keepFavourites) d.copy(favIds = previous.favIds) else d
+        }
+        context.dataStore.edit { prefs ->
+            prefs.clear()
+            writePrefs(prefs, defaults)
+        }
+        return defaults
     }
 
     suspend fun exportJson(settings: AppSettings): String = SettingsJson.encode(settings)
@@ -72,11 +59,89 @@ class SettingsRepository(private val context: Context) {
         return imported
     }
 
+    private fun writePrefs(prefs: androidx.datastore.preferences.core.MutablePreferences, updated: AppSettings) {
+        prefs[Keys.THEME_DARK] = updated.themeMode == ThemeMode.DARK
+        prefs[Keys.AMOLED] = updated.amoled
+        prefs[Keys.ACCENT] = updated.accent.key
+        prefs[Keys.COLUMNS] = updated.columns
+        prefs[Keys.GRID_SCROLL] = updated.gridMode == GridMode.SCROLL
+        prefs[Keys.SELECTED_FOLDERS] = updated.selectedFolders
+        prefs[Keys.SAF_TREE_URIS] = updated.safTreeUris
+        prefs[Keys.FILE_TYPES] = encodeFileTypes(updated.fileTypes)
+        prefs[Keys.DISCOVERED_TYPE_COUNTS] = encodeCounts(updated.discoveredFileTypeCounts)
+        prefs[Keys.FAV_IDS] = updated.favIds
+        prefs[Keys.DONT_LOOP] = updated.dontLoop
+        prefs[Keys.DISABLE_SWIPE_DELETE] = updated.disableSwipeDelete
+        prefs[Keys.DISABLE_DELETE_OPTIONS] = updated.disableDeleteOptions
+        prefs[Keys.DISABLE_EDIT_DELETE] = updated.disableEditDelete
+        prefs[Keys.HAPTICS] = updated.hapticsEnabled
+        prefs[Keys.THUMBNAIL_PADDING] = updated.thumbnailPadding
+        prefs[Keys.COPY_FAVS] = updated.copyFavs
+        prefs[Keys.COPY_FAV_PATH] = updated.copyFavPath
+        prefs[Keys.COPY_FAV_TREE_URI] = updated.copyFavTreeUri
+        prefs[Keys.HIDDEN_FOLDERS] = encodeHiddenFolders(updated.hiddenFolders)
+        prefs[Keys.TAB_FEATURE_MV] = updated.tabFeatures.multivideo
+        prefs[Keys.TAB_FEATURE_ALBUM] = updated.tabFeatures.album
+        prefs[Keys.TAB_ORDER] = updated.tabOrder.joinToString(",") { it.key }
+        prefs[Keys.TAB_HIDDEN] = updated.tabHidden.joinToString(",") { it.key }
+        prefs[Keys.SPEED_IDX] = updated.speedIdx
+        prefs[Keys.CUSTOM_MS] = updated.customMs
+        prefs[Keys.RECENT_WINDOW] = updated.recentWindow.asRecentDays() ?: updated.recentWindowDays
+        prefs[Keys.FAV_WINDOW] = updated.favWindow.encode()
+        prefs[Keys.RECENT_WINDOW_ENC] = updated.recentWindow.encode()
+        prefs[Keys.FAV_TYPE_PHOTO] = updated.favTypes.photo
+        prefs[Keys.FAV_TYPE_VIDEO] = updated.favTypes.video
+        prefs[Keys.FAV_TYPE_GIF] = updated.favTypes.gif
+        prefs[Keys.FAV_TYPE_AUDIO] = updated.favTypes.audio
+        prefs[Keys.RECENT_TYPE_PHOTO] = updated.recentTypes.photo
+        prefs[Keys.RECENT_TYPE_VIDEO] = updated.recentTypes.video
+        prefs[Keys.RECENT_TYPE_GIF] = updated.recentTypes.gif
+        prefs[Keys.RECENT_TYPE_AUDIO] = updated.recentTypes.audio
+        prefs[Keys.SHUFFLE_HISTORY] = updated.shuffleHistoryEncoded
+        prefs[Keys.SHUFFLE_HISTORY_INDEX] = updated.shuffleHistoryIndex
+    }
+
     private fun settingsFromPrefs(prefs: Preferences): AppSettings {
         val features = TabFeatures(
             multivideo = prefs[Keys.TAB_FEATURE_MV] ?: false,
             album = prefs[Keys.TAB_FEATURE_ALBUM] ?: false,
         )
+        val legacyFavTypes = FileTypeFilter(
+            photo = prefs[Keys.FAV_TYPE_PHOTO] ?: true,
+            video = prefs[Keys.FAV_TYPE_VIDEO] ?: true,
+            gif = prefs[Keys.FAV_TYPE_GIF] ?: true,
+            audio = prefs[Keys.FAV_TYPE_AUDIO] ?: true,
+        )
+        val favWindow = FavWindow.normalize(
+            if (prefs.contains(Keys.FAV_WINDOW)) {
+                FavWindow.decode(prefs[Keys.FAV_WINDOW])
+            } else {
+                decodeFavWindowLegacy(null, prefs[Keys.RECENT_WINDOW])
+            },
+        )
+        val recentWindow = FavWindow.normalize(
+            when {
+                prefs.contains(Keys.RECENT_WINDOW_ENC) ->
+                    FavWindow.decode(prefs[Keys.RECENT_WINDOW_ENC])
+                prefs[Keys.RECENT_WINDOW] != null ->
+                    FavWindow.fromRecentDays(prefs[Keys.RECENT_WINDOW] ?: 30)
+                else -> FavWindow.Days(30)
+            },
+        )
+        val recentTypes = if (prefs.contains(Keys.RECENT_TYPE_PHOTO)) {
+            FileTypeFilter(
+                photo = prefs[Keys.RECENT_TYPE_PHOTO] ?: true,
+                video = prefs[Keys.RECENT_TYPE_VIDEO] ?: true,
+                gif = prefs[Keys.RECENT_TYPE_GIF] ?: true,
+                audio = prefs[Keys.RECENT_TYPE_AUDIO] ?: true,
+            )
+        } else {
+            // Migrate: previously shared with fav types
+            legacyFavTypes
+        }
+        val disableDelete = prefs[Keys.DISABLE_DELETE_OPTIONS]
+            ?: (prefs[Keys.DISABLE_EDIT_DELETE] ?: false)
+
         return AppSettings(
             themeMode = if (prefs[Keys.THEME_DARK] != false) ThemeMode.DARK else ThemeMode.LIGHT,
             amoled = prefs[Keys.AMOLED] ?: false,
@@ -86,10 +151,14 @@ class SettingsRepository(private val context: Context) {
             selectedFolders = prefs[Keys.SELECTED_FOLDERS] ?: emptySet(),
             safTreeUris = prefs[Keys.SAF_TREE_URIS] ?: emptySet(),
             fileTypes = decodeFileTypes(prefs[Keys.FILE_TYPES]),
+            discoveredFileTypeCounts = decodeCounts(prefs[Keys.DISCOVERED_TYPE_COUNTS]),
             favIds = prefs[Keys.FAV_IDS] ?: emptySet(),
             dontLoop = prefs[Keys.DONT_LOOP] ?: false,
             disableSwipeDelete = prefs[Keys.DISABLE_SWIPE_DELETE] ?: true,
+            disableDeleteOptions = disableDelete,
             disableEditDelete = prefs[Keys.DISABLE_EDIT_DELETE] ?: false,
+            hapticsEnabled = prefs[Keys.HAPTICS] ?: true,
+            thumbnailPadding = prefs[Keys.THUMBNAIL_PADDING] ?: true,
             copyFavs = prefs[Keys.COPY_FAVS] ?: false,
             copyFavPath = prefs[Keys.COPY_FAV_PATH] ?: "",
             copyFavTreeUri = prefs[Keys.COPY_FAV_TREE_URI] ?: "",
@@ -103,13 +172,13 @@ class SettingsRepository(private val context: Context) {
             ),
             speedIdx = prefs[Keys.SPEED_IDX] ?: 2,
             customMs = prefs[Keys.CUSTOM_MS] ?: 8_000L,
-            recentWindowDays = prefs[Keys.RECENT_WINDOW] ?: 30,
-            favWindow = decodeFavWindow(prefs[Keys.FAV_WINDOW], prefs[Keys.RECENT_WINDOW]),
-            favTypes = FileTypeFilter(
-                photo = prefs[Keys.FAV_TYPE_PHOTO] ?: true,
-                video = prefs[Keys.FAV_TYPE_VIDEO] ?: true,
-                gif = prefs[Keys.FAV_TYPE_GIF] ?: true,
-            ),
+            recentWindowDays = prefs[Keys.RECENT_WINDOW] ?: recentWindow.asRecentDays() ?: 30,
+            favWindow = favWindow,
+            favTypes = legacyFavTypes,
+            recentWindow = recentWindow,
+            recentTypes = recentTypes,
+            shuffleHistoryEncoded = prefs[Keys.SHUFFLE_HISTORY] ?: "",
+            shuffleHistoryIndex = prefs[Keys.SHUFFLE_HISTORY_INDEX] ?: 0,
         )
     }
 
@@ -122,10 +191,14 @@ class SettingsRepository(private val context: Context) {
         val SELECTED_FOLDERS = stringSetPreferencesKey("selected_folders")
         val SAF_TREE_URIS = stringSetPreferencesKey("saf_tree_uris")
         val FILE_TYPES = stringPreferencesKey("file_types")
+        val DISCOVERED_TYPE_COUNTS = stringPreferencesKey("discovered_type_counts")
         val FAV_IDS = stringSetPreferencesKey("fav_ids")
         val DONT_LOOP = booleanPreferencesKey("dont_loop")
         val DISABLE_SWIPE_DELETE = booleanPreferencesKey("disable_swipe_delete")
+        val DISABLE_DELETE_OPTIONS = booleanPreferencesKey("disable_delete_options")
         val DISABLE_EDIT_DELETE = booleanPreferencesKey("disable_edit_delete")
+        val HAPTICS = booleanPreferencesKey("haptics_enabled")
+        val THUMBNAIL_PADDING = booleanPreferencesKey("thumbnail_padding")
         val COPY_FAVS = booleanPreferencesKey("copy_favs")
         val COPY_FAV_PATH = stringPreferencesKey("copy_fav_path")
         val COPY_FAV_TREE_URI = stringPreferencesKey("copy_fav_tree_uri")
@@ -138,9 +211,17 @@ class SettingsRepository(private val context: Context) {
         val CUSTOM_MS = longPreferencesKey("custom_ms")
         val RECENT_WINDOW = intPreferencesKey("recent_window")
         val FAV_WINDOW = stringPreferencesKey("fav_window")
+        val RECENT_WINDOW_ENC = stringPreferencesKey("recent_window_enc")
         val FAV_TYPE_PHOTO = booleanPreferencesKey("fav_type_photo")
         val FAV_TYPE_VIDEO = booleanPreferencesKey("fav_type_video")
         val FAV_TYPE_GIF = booleanPreferencesKey("fav_type_gif")
+        val FAV_TYPE_AUDIO = booleanPreferencesKey("fav_type_audio")
+        val RECENT_TYPE_PHOTO = booleanPreferencesKey("recent_type_photo")
+        val RECENT_TYPE_VIDEO = booleanPreferencesKey("recent_type_video")
+        val RECENT_TYPE_GIF = booleanPreferencesKey("recent_type_gif")
+        val RECENT_TYPE_AUDIO = booleanPreferencesKey("recent_type_audio")
+        val SHUFFLE_HISTORY = stringPreferencesKey("shuffle_history")
+        val SHUFFLE_HISTORY_INDEX = intPreferencesKey("shuffle_history_index")
     }
 
     private fun decodeTabOrder(raw: String?): List<AppTab> {
@@ -150,7 +231,6 @@ class SettingsRepository(private val context: Context) {
             raw.split(",").mapNotNull { AppTab.fromKey(it.trim()) }
                 .ifEmpty { AppTab.defaultOrder }
         }.toMutableList()
-        // Ensure optional tabs appear in Settings reorder UI even for older installs
         AppTab.defaultOrder.forEach { tab ->
             if (tab !in parsed) {
                 val si = parsed.indexOf(AppTab.SETTINGS)
@@ -166,7 +246,6 @@ class SettingsRepository(private val context: Context) {
         hadExplicitHidden: Boolean,
     ): Set<AppTab> {
         if (!hadExplicitHidden || raw == null) {
-            // Fresh / pre-merge: hide Multi-Video & Album unless old feature toggles enabled them
             val hidden = AppTab.defaultHidden.toMutableSet()
             if (features.multivideo) hidden.remove(AppTab.MULTIVIDEO)
             if (features.album) hidden.remove(AppTab.ALBUM)
@@ -176,7 +255,7 @@ class SettingsRepository(private val context: Context) {
         return raw.split(",").mapNotNull { AppTab.fromKey(it.trim()) }.toSet()
     }
 
-    private fun decodeFavWindow(raw: String?, recentDays: Int? = null): FavWindow = when {
+    private fun decodeFavWindowLegacy(raw: String?, recentDays: Int? = null): FavWindow = when {
         raw == null -> {
             if (recentDays != null && recentDays in SlideshowSpeeds.recentWindows) {
                 FavWindow.fromRecentDays(recentDays)
@@ -184,18 +263,7 @@ class SettingsRepository(private val context: Context) {
                 FavWindow.ALL
             }
         }
-        raw == "all" -> FavWindow.ALL
-        raw.startsWith("days:") -> {
-            val days = raw.removePrefix("days:").toIntOrNull() ?: 30
-            FavWindow.options.filterIsInstance<FavWindow.Days>().find { it.days == days }
-                ?: FavWindow.Days(days.coerceIn(1, 3650))
-        }
-        else -> FavWindow.ALL
-    }
-
-    private fun encodeFavWindow(window: FavWindow): String = when (window) {
-        FavWindow.ALL -> "all"
-        is FavWindow.Days -> "days:${window.days}"
+        else -> FavWindow.decode(raw)
     }
 
     private fun encodeFileTypes(map: Map<String, Boolean>): String =
@@ -207,6 +275,19 @@ class SettingsRepository(private val context: Context) {
             val idx = part.indexOf('=')
             if (idx <= 0) return@mapNotNull null
             part.substring(0, idx) to (part.substring(idx + 1).toBooleanStrictOrNull() ?: true)
+        }.toMap()
+    }
+
+    private fun encodeCounts(map: Map<String, Int>): String =
+        map.entries.joinToString(";") { "${it.key}=${it.value}" }
+
+    private fun decodeCounts(raw: String?): Map<String, Int> {
+        if (raw.isNullOrBlank()) return emptyMap()
+        return raw.split(";").mapNotNull { part ->
+            val idx = part.indexOf('=')
+            if (idx <= 0) return@mapNotNull null
+            val n = part.substring(idx + 1).toIntOrNull() ?: return@mapNotNull null
+            part.substring(0, idx) to n
         }.toMap()
     }
 
@@ -235,13 +316,16 @@ private object SettingsJson {
         append("\"speedIdx\":${s.speedIdx},")
         append("\"customMs\":${s.customMs},")
         append("\"recentWindow\":${s.recentWindowDays},")
-        append("\"favWindow\":\"${when (val w = s.favWindow) { FavWindow.ALL -> "all"; is FavWindow.Days -> "days:${w.days}" }}\",")
+        append("\"favWindow\":\"${s.favWindow.encode()}\",")
+        append("\"recentWindowEnc\":\"${s.recentWindow.encode()}\",")
+        append("\"haptics\":${s.hapticsEnabled},")
+        append("\"thumbnailPadding\":${s.thumbnailPadding},")
+        append("\"disableDeleteOptions\":${s.disableDeleteOptions},")
         append("\"favIds\":${s.favIds.joinToString(prefix = "[", postfix = "]") { "\"$it\"" }}")
         append("}")
     }
 
     fun decode(json: String): AppSettings {
-        // Minimal JSON parse for export/import backup
         fun extractString(key: String): String? {
             val pattern = "\"$key\"\\s*:\\s*\"([^\"]*)\"".toRegex()
             return pattern.find(json)?.groupValues?.getOrNull(1)
@@ -251,12 +335,12 @@ private object SettingsJson {
         fun extractInt(key: String): Int? =
             "\"$key\"\\s*:\\s*(\\d+)".toRegex().find(json)?.groupValues?.get(1)?.toIntOrNull()
 
-        val favWindowRaw = extractString("favWindow")
-        val favWindow = when {
-            favWindowRaw == null || favWindowRaw == "all" -> FavWindow.ALL
-            favWindowRaw.startsWith("days:") -> FavWindow.Days(favWindowRaw.removePrefix("days:").toIntOrNull() ?: 30)
-            else -> FavWindow.ALL
-        }
+        val favWindow = FavWindow.normalize(FavWindow.decode(extractString("favWindow")))
+        val recentWindow = FavWindow.normalize(
+            FavWindow.decode(extractString("recentWindowEnc"))
+                .takeUnless { extractString("recentWindowEnc") == null }
+                ?: FavWindow.fromRecentDays(extractInt("recentWindow") ?: 30),
+        )
 
         val favIds = "\"favIds\"\\s*:\\s*\\[([^\\]]*)\\]".toRegex().find(json)?.groupValues?.get(1)
             ?.split(",")
@@ -275,6 +359,10 @@ private object SettingsJson {
             customMs = extractInt("customMs")?.toLong() ?: 8_000L,
             recentWindowDays = extractInt("recentWindow") ?: 30,
             favWindow = favWindow,
+            recentWindow = recentWindow,
+            hapticsEnabled = extractBool("haptics") ?: true,
+            thumbnailPadding = extractBool("thumbnailPadding") ?: true,
+            disableDeleteOptions = extractBool("disableDeleteOptions") ?: false,
         )
     }
 }

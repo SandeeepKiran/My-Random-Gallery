@@ -3,7 +3,7 @@ package com.mousy.myrandomgallery.data.model
 import android.net.Uri
 
 enum class MediaType {
-    PHOTO, VIDEO, GIF, OTHER
+    PHOTO, VIDEO, GIF, AUDIO, OTHER
 }
 
 data class MediaItem(

@@ -55,7 +55,7 @@ class MediaRepository(private val context: Context) {
     suspend fun discoverFolders(
         hiddenFolders: Map<String, Boolean>,
     ): List<FolderInfo> = withContext(Dispatchers.IO) {
-        val all = queryMediaStore(emptySet(), hiddenFolders, emptyMap(), discoverOnly = true)
+        val all = queryMediaStore(emptySet(), hiddenFolders, emptyMap(), discoverOnly = true, includeUnsupported = true)
         all.groupBy { it.folderPath }
             .map { (path, items) ->
                 FolderInfo(
@@ -75,11 +75,40 @@ class MediaRepository(private val context: Context) {
                 .toSet()
         }
 
+    /**
+     * Count every extension under selected folders (including non-playable types)
+     * for the Settings file-type list. Does not apply enabled/disabled filters.
+     */
+    suspend fun discoverExtensionCounts(
+        selectedFolders: Set<String>,
+        safTreeUris: Set<String>,
+        hiddenFolders: Map<String, Boolean>,
+    ): Map<String, Int> = withContext(Dispatchers.IO) {
+        val items = mutableListOf<MediaItem>()
+        val storeFolders = mediaStoreFolderKeys(selectedFolders)
+        if (storeFolders.isNotEmpty()) {
+            items += queryMediaStore(
+                storeFolders, hiddenFolders, emptyMap(),
+                discoverOnly = false,
+                includeUnsupported = true,
+            )
+        }
+        if (safTreeUris.isNotEmpty()) {
+            items += scanSafTrees(safTreeUris, emptyMap())
+        }
+        items
+            .map { it.extension.lowercase(Locale.US) }
+            .filter { it.isNotBlank() }
+            .groupingBy { it }
+            .eachCount()
+    }
+
     private fun queryMediaStore(
         selectedFolders: Set<String>,
         hiddenFolders: Map<String, Boolean>,
         fileTypeFilters: Map<String, Boolean>,
         discoverOnly: Boolean = false,
+        includeUnsupported: Boolean = false,
     ): List<MediaItem> {
         val result = mutableListOf<MediaItem>()
         result += queryCollection(
@@ -88,6 +117,7 @@ class MediaRepository(private val context: Context) {
             hiddenFolders,
             fileTypeFilters,
             discoverOnly,
+            includeUnsupported,
         )
         result += queryCollection(
             MediaStore.Video.Media.EXTERNAL_CONTENT_URI,
@@ -95,6 +125,15 @@ class MediaRepository(private val context: Context) {
             hiddenFolders,
             fileTypeFilters,
             discoverOnly,
+            includeUnsupported,
+        )
+        result += queryCollection(
+            MediaStore.Audio.Media.EXTERNAL_CONTENT_URI,
+            selectedFolders,
+            hiddenFolders,
+            fileTypeFilters,
+            discoverOnly,
+            includeUnsupported,
         )
         return result
     }
@@ -105,6 +144,7 @@ class MediaRepository(private val context: Context) {
         hiddenFolders: Map<String, Boolean>,
         fileTypeFilters: Map<String, Boolean>,
         discoverOnly: Boolean,
+        includeUnsupported: Boolean = false,
     ): List<MediaItem> {
         val projection = arrayOf(
             MediaStore.MediaColumns._ID,
@@ -161,9 +201,8 @@ class MediaRepository(private val context: Context) {
                 if (fileTypeFilters.isNotEmpty() && fileTypeFilters.containsKey(ext) && fileTypeFilters[ext] == false) {
                     continue
                 }
-                if (fileTypeFilters.isEmpty() && ext.isNotEmpty() &&
-                    ext !in SlideshowSpeeds.supportedExtensions &&
-                    ext !in setOf("png", "jpg", "jpeg", "webp", "gif", "mp4")
+                if (!includeUnsupported && fileTypeFilters.isEmpty() && ext.isNotEmpty() &&
+                    ext !in SlideshowSpeeds.supportedExtensions
                 ) {
                     continue
                 }
@@ -262,8 +301,9 @@ class MediaRepository(private val context: Context) {
     }
 
     private fun classifyMedia(mime: String, ext: String): MediaType = when {
-        mime.startsWith("video/") || ext == "mp4" -> MediaType.VIDEO
+        mime.startsWith("video/") || ext == "mp4" || ext == "mkv" || ext == "webm" -> MediaType.VIDEO
         ext == "gif" || mime.equals("image/gif", ignoreCase = true) -> MediaType.GIF
+        mime.startsWith("audio/") || ext in SlideshowSpeeds.audioExtensions -> MediaType.AUDIO
         mime.startsWith("image/") -> MediaType.PHOTO
         else -> MediaType.OTHER
     }
@@ -274,6 +314,12 @@ class MediaRepository(private val context: Context) {
         "webp" -> "image/webp"
         "gif" -> "image/gif"
         "mp4" -> "video/mp4"
+        "mp3" -> "audio/mpeg"
+        "m4a" -> "audio/mp4"
+        "aac" -> "audio/aac"
+        "wav" -> "audio/wav"
+        "ogg" -> "audio/ogg"
+        "flac" -> "audio/flac"
         else -> "application/octet-stream"
     }
 

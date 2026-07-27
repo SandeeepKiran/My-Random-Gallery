@@ -20,6 +20,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 import com.mousy.myrandomgallery.data.model.MediaItem
 import java.text.SimpleDateFormat
@@ -35,11 +36,42 @@ fun DeleteConfirmDialog(
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text(if (count > 1) "Delete $count files?" else "Delete this file?") },
+        text = {
+            Text("This hides the file in the app for this session. You can Undo from the snackbar.")
+        },
         confirmButton = {
-            TextButton(onClick = onConfirm) { Text("Delete") }
+            TextButton(onClick = onConfirm) {
+                Text("Yes, delete", color = Color(0xFFE53935))
+            }
         },
         dismissButton = {
-            TextButton(onClick = onDismiss) { Text("Cancel") }
+            TextButton(onClick = onDismiss) {
+                Text("No", color = Color(0xFF43A047))
+            }
+        },
+    )
+}
+
+@Composable
+fun ResetSettingsConfirmDialog(
+    onConfirm: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Reset all settings?") },
+        text = {
+            Text("Appearance, folders, filters, and safety toggles return to defaults. Favourites are kept. You can Undo from the snackbar.")
+        },
+        confirmButton = {
+            TextButton(onClick = onConfirm) {
+                Text("Yes, reset", color = Color(0xFFE53935))
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("No", color = Color(0xFF43A047))
+            }
         },
     )
 }
@@ -148,11 +180,13 @@ fun HiddenFoldersDialog(
 fun VideoPickerDialog(
     videos: List<MediaItem>,
     onSelect: (MediaItem?) -> Unit,
+    onPickGallery: () -> Unit = {},
+    onPickFiles: () -> Unit = {},
     onDismiss: () -> Unit,
 ) {
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("Choose video") },
+        title = { Text("Choose media") },
         text = {
             LazyColumn(modifier = Modifier.heightIn(max = 420.dp)) {
                 item {
@@ -165,6 +199,26 @@ fun VideoPickerDialog(
                         Text("None (clear)")
                     }
                 }
+                item {
+                    Row(
+                        Modifier
+                            .fillMaxWidth()
+                            .clickable(onClick = onPickGallery)
+                            .padding(vertical = 10.dp),
+                    ) {
+                        Text("System gallery / photos…")
+                    }
+                }
+                item {
+                    Row(
+                        Modifier
+                            .fillMaxWidth()
+                            .clickable(onClick = onPickFiles)
+                            .padding(vertical = 10.dp),
+                    ) {
+                        Text("File explorer…")
+                    }
+                }
                 items(videos, key = { it.stableKey }) { video ->
                     Row(
                         Modifier
@@ -172,7 +226,12 @@ fun VideoPickerDialog(
                             .clickable { onSelect(video) }
                             .padding(vertical = 10.dp),
                     ) {
-                        Text(video.displayName)
+                        Text(
+                            buildString {
+                                append(video.displayName)
+                                if (video.mediaType.name == "AUDIO") append("  ♪")
+                            },
+                        )
                     }
                 }
             }

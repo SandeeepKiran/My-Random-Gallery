@@ -59,7 +59,7 @@ Bottom nav is **icons only** (no text labels under tabs). Accessibility labels s
 | **Favourites** | Favourited items with type + time filters | On |
 | **Recent** | Recently added files (7–365 day windows) | On |
 | **Slideshow** | Opens fullscreen viewer / autoplay | On |
-| **Videos (Multi-Video)** | Play 1 / 2 / 4 videos at once | Off (enable in Settings) |
+| **Videos (Multi-Video)** | Play 1 / 2 / 4 videos or audio files at once | Off (enable in Settings) |
 | **Albums** | Browse selected folders as albums | Off (enable in Settings) |
 | **More** | Settings, appearance, storage tools | Always on |
 
@@ -71,11 +71,11 @@ Default order: Favourites → Recent → Gallery → Slideshow → More. Tab ord
 |---------|-------|--------|
 | Double-tap | Grid tile | Toggle favourite |
 | Long-press (~2.5s) | Grid tile | Enter multi-select |
-| Swipe L/R | Gallery (swipe mode) | New random shuffle set |
+| Swipe L/R or U/D | Gallery (swipe mode) | New random set (up/left) or history back (down/right) |
 | Pinch | Grid | Change columns (1–6) |
-| Tap | Fullscreen viewer | Toggle chrome (bars) |
+| Tap | Fullscreen viewer / slideshow | Toggle chrome (top bar **and** bottom tabs) |
 | Swipe L/R | Viewer | Previous / next item |
-| Swipe up | Viewer | Delete (if safety toggles allow) |
+| Swipe up | Viewer photos | Delete after confirmation (if safety toggles allow) |
 
 ### Appearance
 
@@ -88,8 +88,9 @@ Default order: Favourites → Recent → Gallery → Slideshow → More. Tab ord
 
 - Slideshow speeds: 1s → 5min, Custom, or Off (videos always play full duration)
 - Don’t loop at end of list
-- Disable swipe-up-to-delete
-- Disable editing & deleting media (protects files)
+- Disable swipe-up-to-delete, or disable every delete action app-wide
+- Haptic feedback for confirmed actions and padded/edge-to-edge grid tiles
+- Viewer media controls are separate from slideshow playback; video and audio autoplay when opened
 
 ### Storage & data
 
@@ -98,6 +99,7 @@ Default order: Favourites → Recent → Gallery → Slideshow → More. Tab ord
 - Optional favourites folder sync (copy on favourite / remove copy on unfavourite)
 - Hidden folders dialog
 - Export / import settings
+- Reset all settings while keeping favourites, and share a captured crash log
 - Download favourites as **`.zip`** (copies originals — never moves them)
 
 ---
@@ -311,7 +313,7 @@ These need a real device (or emulator with storage) and are marked `DEVICE-ONLY`
 | Feature | APIs | Primary files |
 |---------|------|----------------|
 | Folder access | SAF `OpenDocumentTree`, persistable URI permissions, MediaStore | `MediaRepository.kt`, `GalleryApp.kt` |
-| Video playback | Media3 `ExoPlayer` | `FullscreenViewer.kt`, `MultiVideoScreen.kt` |
+| Video/audio playback | Media3 `ExoPlayer` | `FullscreenViewer.kt`, `MultiVideoScreen.kt` |
 | Landscape multi-video | `ActivityInfo` orientation lock | `MainActivity.kt` |
 | Pinch columns | `detectTransformGestures` | `MediaGrid.kt` |
 | Favourites zip | `ZipOutputStream`, `FileProvider` | `FavouritesExporter.kt` |
@@ -374,7 +376,7 @@ My_Random_Gallery/
 | Code changes missing on phone | Rebuild (`.\gradlew.bat assembleDebug`) then `adb install -r ...` |
 | Launcher icon stale | Uninstall the app, then install again |
 | Install blocked | Enable unknown sources / use `adb install` |
-| Delete disabled | Check **Disable editing & deleting media** in Settings |
+| Delete disabled | Check **Disable all delete options** in More → Playback & Safety |
 
 ---
 
@@ -395,6 +397,17 @@ gh repo create My_Random_Gallery --public --source=. --remote=origin --push
 - `app/build/` or `.gradle/`
 
 These are already covered by [`.gitignore`](.gitignore).
+
+### Tag a GitHub Release (debug APK)
+
+CI already uploads `app-debug.apk` as an Actions artifact on every push. To also attach it to a **GitHub Release**, push a version tag:
+
+```powershell
+git tag v1.0.1
+git push origin v1.0.1
+```
+
+That triggers [`.github/workflows/release.yml`](.github/workflows/release.yml), which builds the debug APK and attaches it to the release for tag `v*`.
 
 Suggested repo topics: `android`, `kotlin`, `jetpack-compose`, `material3`, `gallery`, `mediastore`.
 

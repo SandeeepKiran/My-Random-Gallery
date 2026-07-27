@@ -7,8 +7,10 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
@@ -74,6 +76,9 @@ fun SettingsScreen(
     onAddSafFolder: () -> Unit,
     onOpenGithub: () -> Unit = {},
     onOpenRate: () -> Unit = {},
+    onResetSettings: () -> Unit,
+    onShareLogs: () -> Unit,
+    appVersion: String,
     modifier: Modifier = Modifier,
 ) {
     val scroll = rememberScrollState()
@@ -212,9 +217,8 @@ fun SettingsScreen(
 
         SectionTitle("File Types")
         SettingsGroup {
-            val exts = settings.fileTypes.keys.ifEmpty {
-                SlideshowSpeeds.supportedExtensions
-            }
+            val exts = (settings.discoveredFileTypeCounts.keys + settings.fileTypes.keys)
+                .ifEmpty { SlideshowSpeeds.supportedExtensions }
             if (exts.isEmpty()) {
                 Text("Select a source folder to detect file types.", modifier = Modifier.padding(16.dp))
             } else {
@@ -227,8 +231,25 @@ fun SettingsScreen(
                             .padding(horizontal = 18.dp, vertical = 12.dp),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
-                        Text(".$ext", modifier = Modifier.weight(1f))
-                        if (!supported) Text("not media", style = MaterialTheme.typography.labelSmall)
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                ".$ext",
+                                color = if (supported) {
+                                    MaterialTheme.colorScheme.onSurface
+                                } else {
+                                    MaterialTheme.colorScheme.onSurfaceVariant
+                                },
+                            )
+                            Text(
+                                if (supported) {
+                                    "${settings.discoveredFileTypeCounts[ext] ?: 0} files"
+                                } else {
+                                    "not media · ${settings.discoveredFileTypeCounts[ext] ?: 0} files"
+                                },
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
                         Checkbox(
                             checked = settings.fileTypes[ext] ?: supported,
                             onCheckedChange = { if (supported) onToggleFileType(ext) },
@@ -266,13 +287,32 @@ fun SettingsScreen(
         SettingsGroup {
             ToggleRow("Don't loop videos", settings.dontLoop, onToggle = { onToggleBehaviour("dontLoop") })
             HorizontalDivider()
-            ToggleRow("Disable 'Swipe up to Delete'", settings.disableSwipeDelete, onToggle = { onToggleBehaviour("disableSwipeDelete") })
+            ToggleRow(
+                "Disable 'Swipe up to Delete'",
+                settings.disableSwipeDelete,
+                subtitle = "In fullscreen, swipe up on a photo to delete it after confirmation. When on, that gesture is blocked.",
+                onToggle = { onToggleBehaviour("disableSwipeDelete") },
+            )
             HorizontalDivider()
             ToggleRow(
-                label = "Disable editing & deleting media",
-                checked = settings.disableEditDelete,
-                subtitle = "Protect files from accidental changes",
-                onToggle = { onToggleBehaviour("disableEditDelete") },
+                label = "Disable all delete options",
+                checked = settings.deletesDisabled,
+                subtitle = "Hides delete actions and blocks deletion prompts throughout the app.",
+                onToggle = { onToggleBehaviour("disableDeleteOptions") },
+            )
+            HorizontalDivider()
+            ToggleRow(
+                label = "Haptic feedback",
+                checked = settings.hapticsEnabled,
+                subtitle = "Vibrate lightly when a shuffle or delete is confirmed.",
+                onToggle = { onToggleBehaviour("hapticsEnabled") },
+            )
+            HorizontalDivider()
+            ToggleRow(
+                label = "Padded thumbnails",
+                checked = settings.thumbnailPadding,
+                subtitle = "On: padded rounded tiles. Off: edge-to-edge grid.",
+                onToggle = { onToggleBehaviour("thumbnailPadding") },
             )
         }
 
@@ -297,6 +337,13 @@ fun SettingsScreen(
             SimpleActionRow(Icons.Default.Archive, "Download favourites (.zip)", onDownloadFavs)
             HorizontalDivider()
             SimpleActionRow(Icons.Default.FileDownload, "Import settings / favourites", onImportSettings)
+            HorizontalDivider()
+            SimpleActionRow(Icons.Default.Archive, "Reset all settings", onResetSettings)
+        }
+
+        SectionTitle("Diagnostics")
+        SettingsGroup {
+            SimpleActionRow(Icons.Default.Share, "Share crash log", onShareLogs)
         }
 
         Text(
@@ -319,6 +366,7 @@ fun SettingsScreen(
             FilledAction(Icons.Default.Star, "RATE", Modifier.weight(1f), onClick = onOpenRate)
         }
 
+        Spacer(Modifier.height(48.dp))
         Text(
             "Made with ❤️ by Sandeep Kiran (Mousy)",
             style = MaterialTheme.typography.labelSmall,
@@ -326,7 +374,16 @@ fun SettingsScreen(
             textAlign = TextAlign.Center,
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(bottom = 24.dp),
+                .padding(bottom = 4.dp),
+        )
+        Text(
+            "v$appVersion",
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            textAlign = TextAlign.Center,
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(bottom = 40.dp),
         )
     }
 }

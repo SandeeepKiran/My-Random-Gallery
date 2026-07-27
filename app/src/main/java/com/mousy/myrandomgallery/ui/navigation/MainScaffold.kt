@@ -37,7 +37,6 @@ fun MainScaffold(
     Scaffold(
         snackbarHost = snackbarHost,
         bottomBar = {
-            // Bottom nav stays visible in the slideshow viewer (wireframe: no old 1/N counter).
             // Icons only — no text labels under tabs.
             if (bottomBarVisible) {
                 NavigationBar(

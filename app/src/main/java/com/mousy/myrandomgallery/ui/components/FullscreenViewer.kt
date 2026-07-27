@@ -92,6 +92,7 @@ fun FullscreenViewer(
     isFavourite: Boolean,
     disableSwipeDelete: Boolean,
     deleteEnabled: Boolean = true,
+    slideshowMode: Boolean = true,
     onClose: () -> Unit,
     onToggleChrome: () -> Unit,
     onNavigate: (Int) -> Unit,
@@ -135,9 +136,9 @@ fun FullscreenViewer(
             modifier = Modifier.fillMaxSize(),
         ) { pageItem ->
             when (pageItem?.mediaType) {
-                MediaType.VIDEO -> VideoPlayerSurface(
+                MediaType.VIDEO, MediaType.AUDIO -> MediaPlayerSurface(
                     item = pageItem,
-                    isPlaying = isPlaying,
+                    chromeVisible = chromeVisible,
                     onToggleChrome = onToggleChrome,
                     onNavigate = { delta ->
                         navDirection = delta
@@ -179,30 +180,32 @@ fun FullscreenViewer(
                     modifier = Modifier.weight(1f),
                     maxLines = 1,
                 )
-                IconButton(onClick = onTogglePlay) {
-                    Icon(
-                        if (isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
-                        null,
-                        tint = Color.White,
-                    )
-                }
-                // Speed control: icon + label outside IconButton so "Off" isn't clipped
-                Row(
-                    modifier = Modifier
-                        .heightIn(min = 48.dp)
-                        .widthIn(min = 56.dp)
-                        .clickable(onClick = onToggleSpeedMenu)
-                        .padding(horizontal = 8.dp, vertical = 10.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Icon(Icons.Default.Speed, null, tint = Color.White)
-                    Text(
-                        speedLabel(speedIndex, customMs),
-                        color = Color.White,
-                        style = MaterialTheme.typography.labelMedium,
-                        modifier = Modifier.padding(start = 4.dp),
-                        maxLines = 1,
-                    )
+                if (slideshowMode) {
+                    IconButton(onClick = onTogglePlay) {
+                        Icon(
+                            if (isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
+                            null,
+                            tint = Color.White,
+                        )
+                    }
+                    // Speed control: icon + label outside IconButton so "Off" isn't clipped
+                    Row(
+                        modifier = Modifier
+                            .heightIn(min = 48.dp)
+                            .widthIn(min = 56.dp)
+                            .clickable(onClick = onToggleSpeedMenu)
+                            .padding(horizontal = 8.dp, vertical = 10.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Icon(Icons.Default.Speed, null, tint = Color.White)
+                        Text(
+                            speedLabel(speedIndex, customMs),
+                            color = Color.White,
+                            style = MaterialTheme.typography.labelMedium,
+                            modifier = Modifier.padding(start = 4.dp),
+                            maxLines = 1,
+                        )
+                    }
                 }
                 IconButton(onClick = onToggleFavourite) {
                     Icon(
@@ -251,7 +254,7 @@ fun FullscreenViewer(
             }
         }
 
-        Box(modifier = Modifier.align(Alignment.Center)) {
+        if (slideshowMode) Box(modifier = Modifier.align(Alignment.Center)) {
             DropdownMenu(
                 expanded = speedMenuOpen,
                 onDismissRequest = onToggleSpeedMenu,
@@ -396,11 +399,11 @@ private fun ZoomableImageSurface(
     }
 }
 
-/** Videos: play as usual; swipe L/R for next/prev (no pinch-zoom). Fresh player per URI. */
+/** Video/audio playback is independent from slideshow state and begins when opened. */
 @Composable
-private fun VideoPlayerSurface(
+private fun MediaPlayerSurface(
     item: MediaItem,
-    isPlaying: Boolean,
+    chromeVisible: Boolean,
     onToggleChrome: () -> Unit,
     onNavigate: (Int) -> Unit,
     onSwipeUpDelete: () -> Unit,
@@ -413,17 +416,13 @@ private fun VideoPlayerSurface(
         val exo = ExoPlayer.Builder(context).build().apply {
             setMediaItem(ExoMediaItem.fromUri(item.uri))
             prepare()
+            playWhenReady = true
         }
         player = exo
         onDispose {
             exo.release()
             if (player === exo) player = null
         }
-    }
-
-    LaunchedEffect(player, isPlaying) {
-        val p = player ?: return@LaunchedEffect
-        if (isPlaying) p.play() else p.pause()
     }
 
     Box(
@@ -458,7 +457,8 @@ private fun VideoPlayerSurface(
             AndroidView(
                 factory = { ctx ->
                     PlayerView(ctx).apply {
-                        useController = false
+                        useController = chromeVisible
+                        controllerShowTimeoutMs = 0
                         this.player = currentPlayer
                     }
                 },
@@ -466,6 +466,9 @@ private fun VideoPlayerSurface(
                     if (view.player !== currentPlayer) {
                         view.player = currentPlayer
                     }
+                    view.useController = chromeVisible
+                    view.controllerShowTimeoutMs = 0
+                    if (chromeVisible) view.showController() else view.hideController()
                 },
                 modifier = Modifier.fillMaxSize(),
             )

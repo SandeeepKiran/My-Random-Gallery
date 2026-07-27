@@ -24,6 +24,7 @@ import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.AudioFile
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.Gif
@@ -34,6 +35,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
@@ -49,6 +51,7 @@ import androidx.compose.ui.input.pointer.positionChanged
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.platform.LocalViewConfiguration
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
@@ -61,9 +64,11 @@ import com.mousy.myrandomgallery.data.model.GridMode
 import com.mousy.myrandomgallery.data.model.MediaItem
 import com.mousy.myrandomgallery.data.model.MediaType
 import com.mousy.myrandomgallery.ui.theme.FavouriteHeart
+import com.mousy.myrandomgallery.util.GalleryHaptics
 import kotlin.math.abs
 import kotlin.math.roundToInt
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 
 private const val LONG_PRESS_MS = 2_500L
 private const val DOUBLE_TAP_MS = 280L
@@ -82,20 +87,26 @@ fun MediaGrid(
     onItemLongPress: (MediaItem) -> Unit,
     onSwipeShuffle: (Int) -> Unit,
     onPinchColumns: (Float) -> Unit,
+    thumbnailPadding: Boolean = true,
+    hapticsEnabled: Boolean = true,
     modifier: Modifier = Modifier,
 ) {
     val thumbPx = with(LocalDensity.current) {
         ((360.dp / columns.coerceIn(1, 6)).coerceIn(120.dp, 400.dp)).roundToPx()
     }
     val scope = rememberCoroutineScope()
-    val swipeOffset = remember { Animatable(0f) }
-    var dragAccum by remember { mutableFloatStateOf(0f) }
+    val view = LocalView.current
+    val swipeOffsetX = remember { Animatable(0f) }
+    val swipeOffsetY = remember { Animatable(0f) }
+    var dragAccumX by remember { mutableFloatStateOf(0f) }
+    var dragAccumY by remember { mutableFloatStateOf(0f) }
+    var dragAxis by remember { mutableIntStateOf(0) } // 0 none, 1 horizontal, 2 vertical
     val cols = columns.coerceIn(1, 6)
 
     BoxWithConstraints(modifier = modifier.fillMaxSize()) {
-        val hSpacing = 4.dp
-        val vSpacing = 4.dp
-        val hPad = 12.dp
+        val hSpacing = if (thumbnailPadding) 4.dp else 0.dp
+        val vSpacing = if (thumbnailPadding) 4.dp else 0.dp
+        val hPad = if (thumbnailPadding) 12.dp else 0.dp
         val cellWidth = (maxWidth - hPad - hSpacing * (cols - 1).coerceAtLeast(0)) / cols
         val cellHeight = cellWidth // square cells
         val density = LocalDensity.current
@@ -105,7 +116,7 @@ fun MediaGrid(
         val displayItems = if (gridMode == GridMode.SWIPE && boundedHeight) {
             val rowPitch = cellHeight + vSpacing
             val fullRows = with(density) {
-                val usable = (availableHeight - 8.dp).toPx().coerceAtLeast(0f)
+                val usable = (availableHeight - if (thumbnailPadding) 8.dp else 0.dp).toPx().coerceAtLeast(0f)
                 val pitch = rowPitch.toPx().coerceAtLeast(1f)
                 (usable / pitch).toInt().coerceAtLeast(1)
             }
@@ -117,7 +128,7 @@ fun MediaGrid(
 
         val gridHeight = if (gridMode == GridMode.SWIPE && boundedHeight) {
             val rows = ((displayItems.size + cols - 1) / cols).coerceAtLeast(1)
-            cellHeight * rows + vSpacing * (rows - 1).coerceAtLeast(0) + 8.dp
+            cellHeight * rows + vSpacing * (rows - 1).coerceAtLeast(0) + if (thumbnailPadding) 8.dp else 0.dp
         } else {
             availableHeight
         }
@@ -139,17 +150,22 @@ fun MediaGrid(
                     .then(
                         if (gridMode == GridMode.SWIPE) Modifier.height(gridHeight) else Modifier.fillMaxSize(),
                     )
-                    .offset { IntOffset(swipeOffset.value.roundToInt(), 0) }
+                    .offset {
+                        IntOffset(swipeOffsetX.value.roundToInt(), swipeOffsetY.value.roundToInt())
+                    }
                     .then(
                         if (gridMode == GridMode.SWIPE) {
-                            Modifier.pointerInput(gridMode, displayItems.size) {
+                            Modifier.pointerInput(gridMode, displayItems.size, hapticsEnabled) {
                                 val width = size.width.toFloat().coerceAtLeast(1f)
+                                val height = size.height.toFloat().coerceAtLeast(1f)
                                 awaitEachGesture {
                                     val down = awaitFirstDown(requireUnconsumed = false)
                                     var totalX = 0f
                                     var totalY = 0f
                                     var dragging = false
-                                    dragAccum = 0f
+                                    dragAccumX = 0f
+                                    dragAccumY = 0f
+                                    dragAxis = 0
                                     do {
                                         val event = awaitPointerEvent(PointerEventPass.Main)
                                         val change = event.changes.firstOrNull { it.id == down.id }
@@ -159,17 +175,35 @@ fun MediaGrid(
                                             val dy = change.position.y - change.previousPosition.y
                                             totalX += dx
                                             totalY += dy
-                                            if (!dragging && abs(totalX) > viewConfiguration.touchSlop * 1.5f &&
-                                                abs(totalX) > abs(totalY) * 1.2f
-                                            ) {
-                                                dragging = true
+                                            if (!dragging) {
+                                                val pastX = abs(totalX) > viewConfiguration.touchSlop * 1.5f
+                                                val pastY = abs(totalY) > viewConfiguration.touchSlop * 1.5f
+                                                when {
+                                                    pastX && abs(totalX) > abs(totalY) * 1.15f -> {
+                                                        dragging = true
+                                                        dragAxis = 1
+                                                    }
+                                                    pastY && abs(totalY) > abs(totalX) * 1.15f -> {
+                                                        dragging = true
+                                                        dragAxis = 2
+                                                    }
+                                                }
                                             }
                                             if (dragging) {
-                                                dragAccum += dx
-                                                scope.launch {
-                                                    swipeOffset.snapTo(
-                                                        (dragAccum * 0.85f).coerceIn(-width * 0.45f, width * 0.45f),
-                                                    )
+                                                if (dragAxis == 1) {
+                                                    dragAccumX += dx
+                                                    scope.launch {
+                                                        swipeOffsetX.snapTo(
+                                                            (dragAccumX * 0.85f).coerceIn(-width * 0.45f, width * 0.45f),
+                                                        )
+                                                    }
+                                                } else {
+                                                    dragAccumY += dy
+                                                    scope.launch {
+                                                        swipeOffsetY.snapTo(
+                                                            (dragAccumY * 0.85f).coerceIn(-height * 0.45f, height * 0.45f),
+                                                        )
+                                                    }
                                                 }
                                                 if (change.positionChanged()) change.consume()
                                             }
@@ -177,55 +211,82 @@ fun MediaGrid(
                                     } while (event.changes.fastAny { it.pressed })
 
                                     if (dragging) {
-                                        val commitLeft = dragAccum < -SWIPE_TRIGGER_PX
-                                        val commitRight = dragAccum > SWIPE_TRIGGER_PX
                                         scope.launch {
-                                            when {
-                                                commitLeft -> {
-                                                    swipeOffset.animateTo(
-                                                        -width,
-                                                        animationSpec = tween(220),
-                                                    )
-                                                    onSwipeShuffle(1)
-                                                    swipeOffset.snapTo(width * 0.35f)
-                                                    swipeOffset.animateTo(
-                                                        0f,
-                                                        animationSpec = spring(
-                                                            dampingRatio = Spring.DampingRatioNoBouncy,
-                                                            stiffness = Spring.StiffnessMediumLow,
-                                                        ),
-                                                    )
-                                                }
-                                                commitRight -> {
-                                                    swipeOffset.animateTo(
-                                                        width,
-                                                        animationSpec = tween(220),
-                                                    )
-                                                    onSwipeShuffle(-1)
-                                                    swipeOffset.snapTo(-width * 0.35f)
-                                                    swipeOffset.animateTo(
-                                                        0f,
-                                                        animationSpec = spring(
-                                                            dampingRatio = Spring.DampingRatioNoBouncy,
-                                                            stiffness = Spring.StiffnessMediumLow,
-                                                        ),
-                                                    )
-                                                }
-                                                else -> {
-                                                    swipeOffset.animateTo(
-                                                        0f,
-                                                        animationSpec = spring(
+                                            when (dragAxis) {
+                                                1 -> {
+                                                    val commitLeft = dragAccumX < -SWIPE_TRIGGER_PX
+                                                    val commitRight = dragAccumX > SWIPE_TRIGGER_PX
+                                                    when {
+                                                        commitLeft -> {
+                                                            swipeOffsetX.animateTo(-width, tween(220))
+                                                            onSwipeShuffle(1)
+                                                            GalleryHaptics.tick(view, hapticsEnabled)
+                                                            swipeOffsetX.snapTo(width * 0.35f)
+                                                            swipeOffsetX.animateTo(0f, spring(
+                                                                dampingRatio = Spring.DampingRatioNoBouncy,
+                                                                stiffness = Spring.StiffnessMediumLow,
+                                                            ))
+                                                        }
+                                                        commitRight -> {
+                                                            swipeOffsetX.animateTo(width, tween(220))
+                                                            onSwipeShuffle(-1)
+                                                            GalleryHaptics.tick(view, hapticsEnabled)
+                                                            swipeOffsetX.snapTo(-width * 0.35f)
+                                                            swipeOffsetX.animateTo(0f, spring(
+                                                                dampingRatio = Spring.DampingRatioNoBouncy,
+                                                                stiffness = Spring.StiffnessMediumLow,
+                                                            ))
+                                                        }
+                                                        else -> swipeOffsetX.animateTo(0f, spring(
                                                             dampingRatio = Spring.DampingRatioMediumBouncy,
                                                             stiffness = Spring.StiffnessMedium,
-                                                        ),
-                                                    )
+                                                        ))
+                                                    }
+                                                }
+                                                2 -> {
+                                                    // Swipe up = forward (same as left); swipe down = back (same as right)
+                                                    val commitUp = dragAccumY < -SWIPE_TRIGGER_PX
+                                                    val commitDown = dragAccumY > SWIPE_TRIGGER_PX
+                                                    when {
+                                                        commitUp -> {
+                                                            swipeOffsetY.animateTo(-height, tween(220))
+                                                            onSwipeShuffle(1)
+                                                            GalleryHaptics.tick(view, hapticsEnabled)
+                                                            swipeOffsetY.snapTo(height * 0.35f)
+                                                            swipeOffsetY.animateTo(0f, spring(
+                                                                dampingRatio = Spring.DampingRatioNoBouncy,
+                                                                stiffness = Spring.StiffnessMediumLow,
+                                                            ))
+                                                        }
+                                                        commitDown -> {
+                                                            swipeOffsetY.animateTo(height, tween(220))
+                                                            onSwipeShuffle(-1)
+                                                            GalleryHaptics.tick(view, hapticsEnabled)
+                                                            swipeOffsetY.snapTo(-height * 0.35f)
+                                                            swipeOffsetY.animateTo(0f, spring(
+                                                                dampingRatio = Spring.DampingRatioNoBouncy,
+                                                                stiffness = Spring.StiffnessMediumLow,
+                                                            ))
+                                                        }
+                                                        else -> swipeOffsetY.animateTo(0f, spring(
+                                                            dampingRatio = Spring.DampingRatioMediumBouncy,
+                                                            stiffness = Spring.StiffnessMedium,
+                                                        ))
+                                                    }
                                                 }
                                             }
-                                            dragAccum = 0f
+                                            dragAccumX = 0f
+                                            dragAccumY = 0f
+                                            dragAxis = 0
                                         }
                                     } else {
-                                        scope.launch { swipeOffset.snapTo(0f) }
-                                        dragAccum = 0f
+                                        scope.launch {
+                                            swipeOffsetX.snapTo(0f)
+                                            swipeOffsetY.snapTo(0f)
+                                        }
+                                        dragAccumX = 0f
+                                        dragAccumY = 0f
+                                        dragAxis = 0
                                     }
                                 }
                             }
@@ -273,7 +334,11 @@ fun MediaGrid(
                             } while (event.changes.fastAny { it.pressed })
                         }
                     },
-                contentPadding = PaddingValues(horizontal = 6.dp, vertical = 4.dp),
+                contentPadding = if (thumbnailPadding) {
+                    PaddingValues(horizontal = 6.dp, vertical = 4.dp)
+                } else {
+                    PaddingValues(0.dp)
+                },
                 horizontalArrangement = Arrangement.spacedBy(hSpacing),
                 verticalArrangement = Arrangement.spacedBy(vSpacing),
             ) {
@@ -283,6 +348,7 @@ fun MediaGrid(
                         thumbPx = thumbPx,
                         isFavourite = favouriteKeys.contains(item.stableKey),
                         isSelected = selectedKeys.contains(item.stableKey),
+                        rounded = thumbnailPadding,
                         onClick = { onItemClick(item) },
                         onDoubleTap = { onItemDoubleTap(item) },
                         onLongPress = { onItemLongPress(item) },
@@ -299,6 +365,7 @@ private fun MediaGridCell(
     thumbPx: Int,
     isFavourite: Boolean,
     isSelected: Boolean,
+    rounded: Boolean = true,
     onClick: () -> Unit,
     onDoubleTap: () -> Unit,
     onLongPress: () -> Unit,
@@ -309,12 +376,15 @@ private fun MediaGridCell(
         ImageRequest.Builder(context)
             .data(item.uri)
             .size(Size(thumbPx, thumbPx))
+            .memoryCacheKey("${item.stableKey}_$thumbPx")
+            .diskCacheKey(item.stableKey)
             .build()
     }
-    val shape = RoundedCornerShape(6.dp)
+    val shape = if (rounded) RoundedCornerShape(6.dp) else RoundedCornerShape(0.dp)
     Box(
         modifier = Modifier
             .aspectRatio(1f)
+            .then(if (rounded) Modifier.padding(5.dp) else Modifier)
             .clip(shape)
             .then(
                 if (isSelected) Modifier.border(3.dp, MaterialTheme.colorScheme.primary, shape)
@@ -375,12 +445,28 @@ private fun MediaGridCell(
                 }
             },
     ) {
-        AsyncImage(
-            model = request,
-            contentDescription = item.displayName,
-            contentScale = ContentScale.Crop,
-            modifier = Modifier.fillMaxSize(),
-        )
+        if (item.mediaType == MediaType.AUDIO) {
+            Box(
+                Modifier
+                    .fillMaxSize()
+                    .padding(8.dp),
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(
+                    Icons.Default.AudioFile,
+                    contentDescription = item.displayName,
+                    tint = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.size(40.dp),
+                )
+            }
+        } else {
+            AsyncImage(
+                model = request,
+                contentDescription = item.displayName,
+                contentScale = ContentScale.Crop,
+                modifier = Modifier.fillMaxSize(),
+            )
+        }
         if (isSelected) {
             Icon(
                 Icons.Default.CheckCircle,
@@ -406,6 +492,7 @@ private fun MediaGridCell(
         when (item.mediaType) {
             MediaType.VIDEO -> BadgeIcon(Icons.Default.PlayCircle, Modifier.align(Alignment.BottomEnd))
             MediaType.GIF -> BadgeIcon(Icons.Default.Gif, Modifier.align(Alignment.BottomEnd))
+            MediaType.AUDIO -> BadgeIcon(Icons.Default.AudioFile, Modifier.align(Alignment.BottomEnd))
             else -> Unit
         }
     }

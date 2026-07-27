@@ -27,7 +27,8 @@ import com.mousy.myrandomgallery.data.model.FileTypeFilter
 
 /**
  * Shared type + date filter bar for Recents and Favourites.
- * Both screens bind to the same preferences so filters stay in sync.
+ * Preferences are independent per screen; only the UI chrome is shared.
+ * Date filter uses a dropdown (not a cycle) so Days(365) is selected safely.
  */
 @Composable
 fun MediaListFilterBar(
@@ -41,6 +42,7 @@ fun MediaListFilterBar(
     modifier: Modifier = Modifier,
 ) {
     var dateMenuOpen by remember { mutableStateOf(false) }
+    val safeWindow = remember(window) { FavWindow.normalize(window) }
 
     Row(
         modifier = modifier
@@ -70,23 +72,30 @@ fun MediaListFilterBar(
                     trailingIcon = { if (types.gif) Text("✓") },
                     onClick = { onToggleType("gif") },
                 )
+                DropdownMenuItem(
+                    text = { Text("Audio") },
+                    trailingIcon = { if (types.audio) Text("✓") },
+                    onClick = { onToggleType("audio") },
+                )
             }
         }
         Box(modifier = Modifier.padding(start = 6.dp)) {
             OutlinedButton(onClick = { dateMenuOpen = true }) {
                 Icon(Icons.Default.CalendarMonth, null, modifier = Modifier.size(18.dp))
-                Text(window.shortLabel(), modifier = Modifier.padding(start = 4.dp))
+                Text(safeWindow.shortLabel(), modifier = Modifier.padding(start = 4.dp))
             }
             DropdownMenu(expanded = dateMenuOpen, onDismissRequest = { dateMenuOpen = false }) {
                 FavWindow.options.forEach { option ->
+                    val canonical = FavWindow.normalize(option)
                     DropdownMenuItem(
-                        text = { Text(option.label()) },
+                        text = { Text(canonical.label()) },
                         trailingIcon = {
-                            if (option.sameAs(window)) Text("✓")
+                            if (canonical.sameAs(safeWindow)) Text("✓")
                         },
                         onClick = {
                             dateMenuOpen = false
-                            onSelectWindow(option)
+                            // Always pass the companion-list instance (esp. Days(365)).
+                            onSelectWindow(canonical)
                         },
                     )
                 }
@@ -96,6 +105,6 @@ fun MediaListFilterBar(
 }
 
 fun typeFilterLabel(filter: FileTypeFilter): String {
-    val count = listOf(filter.photo, filter.video, filter.gif).count { it }
-    return if (count == 3) "All types" else "$count types"
+    val count = listOf(filter.photo, filter.video, filter.gif, filter.audio).count { it }
+    return if (count == 4) "All types" else "$count types"
 }

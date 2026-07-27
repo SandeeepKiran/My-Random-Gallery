@@ -63,6 +63,7 @@ data class FileTypeFilter(
     val photo: Boolean = true,
     val video: Boolean = true,
     val gif: Boolean = true,
+    val audio: Boolean = true,
 )
 
 data class TabFeatures(
@@ -74,6 +75,8 @@ data class MultiVideoCell(
     val index: Int,
     val mediaId: Long? = null,
     val uri: String? = null,
+    val displayName: String? = null,
+    val isAudio: Boolean = false,
     val playing: Boolean = false,
     val muted: Boolean = false,
     val progress: Float = 0f,
@@ -84,6 +87,7 @@ data class MultiVideoState(
     val muteAll: Boolean = false,
     val landscape: Boolean = false,
     val overlayVisible: Boolean = true,
+    val chromeVisible: Boolean = true,
     val pickerIndex: Int? = null,
     val cells: List<MultiVideoCell> = List(4) { MultiVideoCell(index = it) },
 )
@@ -103,10 +107,18 @@ data class AppSettings(
     val selectedFolders: Set<String> = emptySet(),
     val safTreeUris: Set<String> = emptySet(),
     val fileTypes: Map<String, Boolean> = emptyMap(),
+    /** Extension → count of files seen in last scan (for Settings UI). */
+    val discoveredFileTypeCounts: Map<String, Int> = emptyMap(),
     val favIds: Set<String> = emptySet(),
     val dontLoop: Boolean = false,
     val disableSwipeDelete: Boolean = true,
+    /** Hides delete UI and blocks all delete actions app-wide. */
+    val disableDeleteOptions: Boolean = false,
+    /** Legacy alias kept for import/export compatibility. */
     val disableEditDelete: Boolean = false,
+    val hapticsEnabled: Boolean = true,
+    /** Padding + rounded corners on gallery thumbnails. */
+    val thumbnailPadding: Boolean = true,
     val copyFavs: Boolean = false,
     val copyFavPath: String = "",
     val copyFavTreeUri: String = "",
@@ -116,13 +128,23 @@ data class AppSettings(
     val tabHidden: Set<AppTab> = AppTab.defaultHidden,
     val speedIdx: Int = 2,
     val customMs: Long = 8_000L,
-    /** Kept in sync with [favWindow] day windows for Recents. */
+    /** Legacy day count; kept for migration. Prefer [recentWindow]. */
     val recentWindowDays: Int = 30,
-    /** Shared date window for Favourites and Recents. */
+    /** Favourites date window (independent of Recents). */
     val favWindow: FavWindow = FavWindow.ALL,
-    /** Shared media-type filter for Favourites and Recents. */
+    /** Favourites media-type filter (independent of Recents). */
     val favTypes: FileTypeFilter = FileTypeFilter(),
+    /** Recents date window (independent of Favourites). */
+    val recentWindow: FavWindow = FavWindow.Days(30),
+    /** Recents media-type filter (independent of Favourites). */
+    val recentTypes: FileTypeFilter = FileTypeFilter(),
+    /** Persisted gallery shuffle pages (pipe-separated keys; pages joined by `;`). */
+    val shuffleHistoryEncoded: String = "",
+    val shuffleHistoryIndex: Int = 0,
 ) {
+    /** Effective “delete disabled” — either dedicated or legacy toggle. */
+    val deletesDisabled: Boolean get() = disableDeleteOptions || disableEditDelete
+
     companion object {
         fun defaultHiddenFolders(): Map<String, Boolean> = mapOf(
             ".thumbnails" to false,
@@ -130,9 +152,17 @@ data class AppSettings(
             "Android/media" to false,
             ".Trash" to false,
         )
+
+        fun defaults(): AppSettings = AppSettings()
     }
 }
 
+/**
+ * Date window for Favourites / Recents filters.
+ *
+ * Important: always resolve through [normalize] / companion [options] so Days(365)
+ * is never an orphan instance that breaks index lookups.
+ */
 sealed class FavWindow {
     data object ALL : FavWindow()
     data class Days(val days: Int) : FavWindow()
@@ -156,7 +186,11 @@ sealed class FavWindow {
 
     fun matches(ageDays: Int): Boolean = when (this) {
         ALL -> true
-        is Days -> ageDays <= days
+        is Days -> {
+            val limit = days.coerceIn(1, 3650)
+            val age = ageDays.coerceAtLeast(0)
+            age <= limit
+        }
     }
 
     fun sameAs(other: FavWindow): Boolean = when (this) {
@@ -164,10 +198,16 @@ sealed class FavWindow {
         is Days -> other is Days && other.days == days
     }
 
-    /** Day count for Recents sync; null means "all time". */
+    /** Day count for legacy Recents sync; null means "all time". */
     fun asRecentDays(): Int? = when (this) {
         ALL -> null
-        is Days -> days
+        is Days -> days.coerceIn(1, 3650)
+    }
+
+    /** Stable encode key used in DataStore. */
+    fun encode(): String = when (this) {
+        ALL -> "all"
+        is Days -> "days:${days.coerceIn(1, 3650)}"
     }
 
     companion object {
@@ -175,17 +215,36 @@ sealed class FavWindow {
             ALL, Days(7), Days(14), Days(30), Days(60), Days(90), Days(365),
         )
 
-        fun fromRecentDays(days: Int): FavWindow =
-            options.filterIsInstance<Days>().find { it.days == days } ?: Days(days.coerceAtLeast(1))
+        /** Map any window onto the canonical companion instance (fixes Days(365) identity bugs). */
+        fun normalize(window: FavWindow): FavWindow = when (window) {
+            ALL -> ALL
+            is Days -> options.filterIsInstance<Days>().find { it.days == window.days }
+                ?: Days(window.days.coerceIn(1, 3650))
+        }
+
+        fun fromRecentDays(days: Int): FavWindow {
+            val d = days.coerceIn(1, 3650)
+            return options.filterIsInstance<Days>().find { it.days == d } ?: Days(d)
+        }
+
+        fun decode(raw: String?): FavWindow {
+            if (raw.isNullOrBlank()) return ALL
+            return when {
+                raw.equals("all", ignoreCase = true) -> ALL
+                raw.startsWith("days:", ignoreCase = true) -> {
+                    val days = raw.substringAfter(':').toIntOrNull()?.coerceIn(1, 3650) ?: 30
+                    fromRecentDays(days)
+                }
+                // Numeric legacy
+                raw.toIntOrNull() != null -> fromRecentDays(raw.toInt())
+                else -> ALL
+            }
+        }
 
         fun cycle(current: FavWindow): FavWindow {
-            // Compare by value (not list identity) so Days(365) always resolves correctly.
-            val idx = when (current) {
-                ALL -> 0
-                is Days -> options.indexOfFirst { it is Days && it.days == current.days }
-                    .takeIf { it >= 0 } ?: 0
-            }
-            return options[(idx + 1) % options.size]
+            val canonical = normalize(current)
+            val idx = options.indexOfFirst { it.sameAs(canonical) }.takeIf { it >= 0 } ?: 0
+            return options.getOrElse((idx + 1) % options.size) { ALL }
         }
     }
 }
@@ -212,6 +271,8 @@ object SlideshowSpeeds {
     val recentWindows: List<Int> = listOf(7, 14, 30, 60, 90, 365)
 
     val supportedExtensions: Set<String> = setOf(
-        "png", "jpg", "jpeg", "webp", "gif", "mp4", "mp3",
+        "png", "jpg", "jpeg", "webp", "gif", "mp4", "mp3", "m4a", "aac", "wav", "ogg", "flac",
     )
+
+    val audioExtensions: Set<String> = setOf("mp3", "m4a", "aac", "wav", "ogg", "flac", "opus")
 }

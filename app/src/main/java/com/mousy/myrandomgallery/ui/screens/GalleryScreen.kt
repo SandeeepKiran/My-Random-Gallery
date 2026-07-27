@@ -40,6 +40,8 @@ fun GalleryScreen(
     onItemLongPress: (MediaItem) -> Unit,
     onSwipeShuffle: (Int) -> Unit,
     onPinchColumns: (Float) -> Unit,
+    thumbnailPadding: Boolean = true,
+    hapticsEnabled: Boolean = true,
     onGoSettings: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -88,6 +90,8 @@ fun GalleryScreen(
                     onItemLongPress = onItemLongPress,
                     onSwipeShuffle = onSwipeShuffle,
                     onPinchColumns = onPinchColumns,
+                    thumbnailPadding = thumbnailPadding,
+                    hapticsEnabled = hapticsEnabled,
                     modifier = Modifier.weight(1f),
                 )
                 Text(
