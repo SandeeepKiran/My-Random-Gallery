@@ -10,11 +10,15 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalView
 import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
+import androidx.core.view.WindowCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.mousy.myrandomgallery.data.media.MediaPermissions
+import com.mousy.myrandomgallery.data.model.ThemeMode
 import com.mousy.myrandomgallery.ui.GalleryApp
 import com.mousy.myrandomgallery.ui.theme.MyRandomGalleryTheme
 import com.mousy.myrandomgallery.util.AndroidVersionGate
@@ -48,6 +52,17 @@ class MainActivity : ComponentActivity() {
 
         setContent {
             val settings by viewModel.settings.collectAsStateWithLifecycle()
+            val view = LocalView.current
+
+            // Edge-to-edge draws under the bars, so bar icons have to follow the app theme
+            // instead of the system one or they vanish against the header.
+            LaunchedEffect(settings.themeMode, view) {
+                val controller = WindowCompat.getInsetsController(window, view)
+                val light = settings.themeMode == ThemeMode.LIGHT
+                controller.isAppearanceLightStatusBars = light
+                controller.isAppearanceLightNavigationBars = light
+            }
+
             MyRandomGalleryTheme(
                 themeMode = settings.themeMode,
                 amoled = settings.amoled,

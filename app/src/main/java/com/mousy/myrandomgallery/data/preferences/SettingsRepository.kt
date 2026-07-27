@@ -5,6 +5,7 @@ import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
+import androidx.datastore.preferences.core.floatPreferencesKey
 import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
@@ -16,6 +17,7 @@ import com.mousy.myrandomgallery.data.model.AppTab
 import com.mousy.myrandomgallery.data.model.FavWindow
 import com.mousy.myrandomgallery.data.model.FileTypeFilter
 import com.mousy.myrandomgallery.data.model.GridMode
+import com.mousy.myrandomgallery.data.model.SamplingDefaults
 import com.mousy.myrandomgallery.data.model.SlideshowSpeeds
 import com.mousy.myrandomgallery.data.model.TabFeatures
 import com.mousy.myrandomgallery.data.model.ThemeMode
@@ -70,6 +72,7 @@ class SettingsRepository(private val context: Context) {
         prefs[Keys.SAF_TREE_URIS] = updated.safTreeUris
         prefs[Keys.FILE_TYPES] = encodeFileTypes(updated.fileTypes)
         prefs[Keys.DISCOVERED_TYPE_COUNTS] = encodeCounts(updated.discoveredFileTypeCounts)
+        prefs[Keys.TYPE_COUNTS_SCANNED_AT] = updated.fileTypeCountsScannedAtMs
         prefs[Keys.FAV_IDS] = updated.favIds
         prefs[Keys.DONT_LOOP] = updated.dontLoop
         prefs[Keys.DISABLE_SWIPE_DELETE] = updated.disableSwipeDelete
@@ -98,8 +101,12 @@ class SettingsRepository(private val context: Context) {
         prefs[Keys.RECENT_TYPE_VIDEO] = updated.recentTypes.video
         prefs[Keys.RECENT_TYPE_GIF] = updated.recentTypes.gif
         prefs[Keys.RECENT_TYPE_AUDIO] = updated.recentTypes.audio
-        prefs[Keys.SHUFFLE_HISTORY] = updated.shuffleHistoryEncoded
-        prefs[Keys.SHUFFLE_HISTORY_INDEX] = updated.shuffleHistoryIndex
+        prefs[Keys.SHUFFLE_SEEDS] = updated.shuffleSeeds.joinToString(",")
+        prefs[Keys.SHUFFLE_SEED_INDEX] = updated.shuffleSeedIndex
+        prefs[Keys.AVG_VIEWED_PER_SESSION] = updated.avgViewedPerSession
+        // Purge the pre-seed history blob: it stored up to 40 x 10k keys as one string.
+        if (prefs.contains(Keys.LEGACY_SHUFFLE_HISTORY)) prefs.remove(Keys.LEGACY_SHUFFLE_HISTORY)
+        if (prefs.contains(Keys.LEGACY_SHUFFLE_HISTORY_INDEX)) prefs.remove(Keys.LEGACY_SHUFFLE_HISTORY_INDEX)
     }
 
     private fun settingsFromPrefs(prefs: Preferences): AppSettings {
@@ -146,13 +153,14 @@ class SettingsRepository(private val context: Context) {
         return AppSettings(
             themeMode = if (prefs[Keys.THEME_DARK] != false) ThemeMode.DARK else ThemeMode.LIGHT,
             amoled = prefs[Keys.AMOLED] ?: false,
-            accent = AccentColor.fromKey(prefs[Keys.ACCENT] ?: AccentColor.ROSE.key),
+            accent = AccentColor.fromKey(prefs[Keys.ACCENT] ?: AccentColor.DEFAULT.key),
             columns = prefs[Keys.COLUMNS] ?: 3,
             gridMode = if (prefs[Keys.GRID_SCROLL] == true) GridMode.SCROLL else GridMode.SWIPE,
             selectedFolders = prefs[Keys.SELECTED_FOLDERS] ?: emptySet(),
             safTreeUris = prefs[Keys.SAF_TREE_URIS] ?: emptySet(),
             fileTypes = decodeFileTypes(prefs[Keys.FILE_TYPES]),
             discoveredFileTypeCounts = decodeCounts(prefs[Keys.DISCOVERED_TYPE_COUNTS]),
+            fileTypeCountsScannedAtMs = prefs[Keys.TYPE_COUNTS_SCANNED_AT] ?: 0L,
             favIds = prefs[Keys.FAV_IDS] ?: emptySet(),
             dontLoop = prefs[Keys.DONT_LOOP] ?: false,
             disableSwipeDelete = prefs[Keys.DISABLE_SWIPE_DELETE] ?: true,
@@ -178,8 +186,10 @@ class SettingsRepository(private val context: Context) {
             favTypes = legacyFavTypes,
             recentWindow = recentWindow,
             recentTypes = recentTypes,
-            shuffleHistoryEncoded = prefs[Keys.SHUFFLE_HISTORY] ?: "",
-            shuffleHistoryIndex = prefs[Keys.SHUFFLE_HISTORY_INDEX] ?: 0,
+            shuffleSeeds = decodeSeeds(prefs[Keys.SHUFFLE_SEEDS]),
+            shuffleSeedIndex = prefs[Keys.SHUFFLE_SEED_INDEX] ?: 0,
+            avgViewedPerSession = prefs[Keys.AVG_VIEWED_PER_SESSION]
+                ?: SamplingDefaults.INITIAL_AVG_VIEWED,
         ).sanitized()
     }
 
@@ -221,8 +231,17 @@ class SettingsRepository(private val context: Context) {
         val RECENT_TYPE_VIDEO = booleanPreferencesKey("recent_type_video")
         val RECENT_TYPE_GIF = booleanPreferencesKey("recent_type_gif")
         val RECENT_TYPE_AUDIO = booleanPreferencesKey("recent_type_audio")
-        val SHUFFLE_HISTORY = stringPreferencesKey("shuffle_history")
-        val SHUFFLE_HISTORY_INDEX = intPreferencesKey("shuffle_history_index")
+        val TYPE_COUNTS_SCANNED_AT = longPreferencesKey("type_counts_scanned_at")
+        val SHUFFLE_SEEDS = stringPreferencesKey("shuffle_seeds")
+        val SHUFFLE_SEED_INDEX = intPreferencesKey("shuffle_seed_index")
+        val AVG_VIEWED_PER_SESSION = floatPreferencesKey("avg_viewed_per_session")
+        val LEGACY_SHUFFLE_HISTORY = stringPreferencesKey("shuffle_history")
+        val LEGACY_SHUFFLE_HISTORY_INDEX = intPreferencesKey("shuffle_history_index")
+    }
+
+    private fun decodeSeeds(raw: String?): List<Long> {
+        if (raw.isNullOrBlank()) return emptyList()
+        return raw.split(',').mapNotNull { it.trim().toLongOrNull() }
     }
 
     private fun decodeTabOrder(raw: String?): List<AppTab> {
@@ -352,7 +371,7 @@ private object SettingsJson {
         return AppSettings(
             themeMode = if (extractString("theme") == "light") ThemeMode.LIGHT else ThemeMode.DARK,
             amoled = extractBool("amoled") ?: false,
-            accent = AccentColor.fromKey(extractString("accent") ?: "rose"),
+            accent = AccentColor.fromKey(extractString("accent") ?: AccentColor.DEFAULT.key),
             columns = extractInt("columns") ?: 3,
             gridMode = if (extractString("gridMode") == "scroll") GridMode.SCROLL else GridMode.SWIPE,
             favIds = favIds,

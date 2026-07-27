@@ -1,7 +1,11 @@
 package com.mousy.myrandomgallery.ui
 
+import android.app.Activity
+import android.content.Context
+import android.content.ContextWrapper
 import android.content.Intent
 import android.content.pm.ActivityInfo
+import android.content.res.Configuration
 import android.net.Uri
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -17,18 +21,27 @@ import androidx.compose.animation.scaleOut
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalView
+import androidx.compose.ui.res.stringResource
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowInsetsControllerCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.mousy.myrandomgallery.R
 import com.mousy.myrandomgallery.data.model.AppTab
 import com.mousy.myrandomgallery.data.model.MediaItem
 import com.mousy.myrandomgallery.data.model.MediaType
@@ -48,9 +61,16 @@ import com.mousy.myrandomgallery.ui.screens.GalleryScreen
 import com.mousy.myrandomgallery.ui.screens.MultiVideoScreen
 import com.mousy.myrandomgallery.ui.screens.RecentScreen
 import com.mousy.myrandomgallery.ui.screens.SettingsScreen
+import com.mousy.myrandomgallery.ui.components.ThumbSpec
 import com.mousy.myrandomgallery.util.GalleryHaptics
 import com.mousy.myrandomgallery.util.LogCapture
 import com.mousy.myrandomgallery.viewmodel.GalleryViewModel
+
+private tailrec fun Context.findActivity(): Activity? = when (this) {
+    is Activity -> this
+    is ContextWrapper -> baseContext.findActivity()
+    else -> null
+}
 
 @Composable
 fun GalleryApp(
@@ -61,6 +81,11 @@ fun GalleryApp(
     val snackbarHostState = remember { SnackbarHostState() }
     val context = LocalContext.current
     val view = LocalView.current
+    // Read in composition rather than from LocalContext inside the click handlers, so the
+    // values track configuration changes.
+    val githubUrl = stringResource(R.string.github_url)
+    val playStoreUrl = stringResource(R.string.play_store_url)
+    val playStoreWebUrl = stringResource(R.string.play_store_web_url)
     val appVersion = remember {
         runCatching {
             val pm = context.packageManager
@@ -91,6 +116,29 @@ fun GalleryApp(
 
     BackHandler(enabled = backEnabled) {
         viewModel.handleSystemBack()
+    }
+
+    // Fullscreen means fullscreen: drop the status and navigation bars while the viewer is up,
+    // and put them back on the way out. Swiping from an edge still reveals them temporarily.
+    DisposableEffect(state.viewerOpen, view) {
+        val window = context.findActivity()?.window
+        val controller = window?.let { WindowCompat.getInsetsController(it, view) }
+        if (controller != null) {
+            if (state.viewerOpen) {
+                controller.systemBarsBehavior =
+                    WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+                controller.hide(WindowInsetsCompat.Type.systemBars())
+            } else {
+                controller.show(WindowInsetsCompat.Type.systemBars())
+            }
+        }
+        onDispose { controller?.show(WindowInsetsCompat.Type.systemBars()) }
+    }
+
+    val landscape = LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
+    val density = LocalDensity.current
+    val gridThumbBucketPx = remember(state.settings.columns, landscape, density) {
+        ThumbSpec.gridBucket(state.settings.columns, landscape, density)
     }
 
     val safFolderLauncher = rememberLauncherForActivityResult(
@@ -165,12 +213,17 @@ fun GalleryApp(
         onRequestOrientation(orientation)
     }
 
-    fun handleItemClick(item: MediaItem, list: List<MediaItem>) {
+    fun handleItemClick(item: MediaItem, list: List<MediaItem>, fromGallery: Boolean = false) {
         if (state.selectMode) {
             viewModel.toggleSelect(item.stableKey)
             return
         }
-        viewModel.openViewer(list.map { it.stableKey }, list.indexOf(item), slideshowMode = false)
+        viewModel.openViewer(
+            keys = list.map { it.stableKey },
+            index = list.indexOfFirst { it.stableKey == item.stableKey }.coerceAtLeast(0),
+            slideshowMode = false,
+            fromGallery = fromGallery,
+        )
     }
 
     val hideBottomBar = (state.viewerOpen && !state.viewerChrome) ||
@@ -211,7 +264,13 @@ fun GalleryApp(
         },
         onTabSelected = viewModel::selectTab,
     ) {
-        Box(Modifier.fillMaxSize()) {
+        // Status-bar inset lives here rather than around the whole scaffold so the fullscreen
+        // viewer (a sibling below) stays edge-to-edge without shifting the screen behind it.
+        Box(
+            Modifier
+                .fillMaxSize()
+                .statusBarsPadding(),
+        ) {
             AnimatedContent(
                 targetState = state.currentTab,
                 transitionSpec = {
@@ -232,6 +291,7 @@ fun GalleryApp(
                 when (tab) {
                 AppTab.GALLERY -> GalleryScreen(
                     items = state.gallery,
+                    totalCount = state.galleryTotal,
                     columns = state.settings.columns,
                     gridMode = state.settings.gridMode,
                     noFolders = state.noFolders,
@@ -242,7 +302,7 @@ fun GalleryApp(
                     onToggleGridMode = viewModel::toggleGridMode,
                     onCycleColumns = viewModel::cycleColumns,
                     onShuffle = { viewModel.shuffleGrid() },
-                    onItemClick = { handleItemClick(it, state.gallery) },
+                    onItemClick = { handleItemClick(it, state.gallery, fromGallery = true) },
                     onItemDoubleTap = {
                         GalleryHaptics.confirm(view, state.settings.hapticsEnabled)
                         viewModel.toggleFavourite(it.stableKey)
@@ -250,6 +310,7 @@ fun GalleryApp(
                     onItemLongPress = { viewModel.enterSelectMode(it.stableKey) },
                     onSwipeShuffle = viewModel::onGridSwipe,
                     onPinchColumns = viewModel::adjustColumnsFromPinch,
+                    onReachedEnd = viewModel::extendSampleIfNeeded,
                     onGoSettings = { viewModel.selectTab(AppTab.SETTINGS) },
                 )
                 AppTab.FAV -> FavouritesScreen(
@@ -336,6 +397,8 @@ fun GalleryApp(
                     discoveredFolders = state.discoveredFolders,
                     collapsedGroups = state.collapsedGroups,
                     appVersion = appVersion,
+                    countsRefreshing = state.countsRefreshing,
+                    onRefreshFileTypeCounts = viewModel::refreshFileTypeCounts,
                     onToggleDark = viewModel::toggleTheme,
                     onToggleAmoled = viewModel::toggleAmoled,
                     onSetAccent = viewModel::setAccent,
@@ -388,21 +451,18 @@ fun GalleryApp(
                         }
                     },
                     onOpenGithub = {
-                        val url = context.getString(com.mousy.myrandomgallery.R.string.github_url)
                         runCatching {
                             context.startActivity(
-                                Intent(Intent.ACTION_VIEW, Uri.parse(url)),
+                                Intent(Intent.ACTION_VIEW, Uri.parse(githubUrl)),
                             )
                         }
                     },
                     onOpenRate = {
-                        val market = context.getString(com.mousy.myrandomgallery.R.string.play_store_url)
-                        val web = context.getString(com.mousy.myrandomgallery.R.string.play_store_web_url)
                         runCatching {
-                            context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(market)))
+                            context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(playStoreUrl)))
                         }.onFailure {
                             runCatching {
-                                context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(web)))
+                                context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(playStoreWebUrl)))
                             }
                         }
                     },
@@ -471,6 +531,8 @@ fun GalleryApp(
                 onVideoEnded = viewModel::onViewerVideoEnded,
                 onUserInteracted = viewModel::noteViewerInteraction,
                 chromeAutoHideNonce = state.viewerChromeNonce,
+                prefetch = state.viewerPrefetch,
+                gridThumbBucketPx = gridThumbBucketPx,
                 modifier = Modifier.fillMaxSize(),
             )
         }

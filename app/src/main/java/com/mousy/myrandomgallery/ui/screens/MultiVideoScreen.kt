@@ -5,7 +5,6 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.aspectRatio
@@ -41,6 +40,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -67,7 +67,7 @@ import kotlinx.coroutines.isActive
  * symbols are not present in the published `media3-common-ktx` / `media3-ui-compose` 1.10.1 AARs.
  * Fallback: one ExoPlayer per cell with LifecycleStartEffect (onStopOrDispose release).
  */
-@OptIn(UnstableApi::class)
+@androidx.annotation.OptIn(markerClass = [UnstableApi::class])
 @Composable
 fun MultiVideoScreen(
     state: MultiVideoState,
@@ -161,7 +161,7 @@ fun MultiVideoScreen(
                     }
                 }
 
-                BoxWithConstraints(modifier = Modifier.weight(1f)) {
+                Box(modifier = Modifier.weight(1f)) {
                     val cols = if (state.count == 4) 2 else 1
                     val rows = if (state.count == 4) 2 else state.count
                     if (state.landscape) {
@@ -250,7 +250,7 @@ fun MultiVideoScreen(
     }
 }
 
-@OptIn(UnstableApi::class)
+@androidx.annotation.OptIn(markerClass = [UnstableApi::class])
 @Composable
 private fun MultiVideoCellCard(
     cell: MultiVideoCell,
@@ -355,7 +355,7 @@ private fun MultiVideoCellCard(
     }
 }
 
-@OptIn(UnstableApi::class)
+@androidx.annotation.OptIn(markerClass = [UnstableApi::class])
 @Composable
 private fun MultiVideoPlayer(
     uri: Uri,
@@ -365,15 +365,19 @@ private fun MultiVideoPlayer(
 ) {
     val context = LocalContext.current
     var player by remember { mutableStateOf<ExoPlayer?>(null) }
+    // Resume where the cell left off instead of restarting after a recreate.
+    var resumePositionMs by rememberSaveable(uri.toString()) { mutableStateOf(0L) }
 
     LifecycleStartEffect(uri) {
         val exo = ExoPlayer.Builder(context).build().apply {
             setMediaItem(ExoMediaItem.fromUri(uri))
             repeatMode = Player.REPEAT_MODE_ONE
+            if (resumePositionMs > 0L) seekTo(resumePositionMs)
             prepare()
         }
         player = exo
         onStopOrDispose {
+            resumePositionMs = exo.currentPosition.coerceAtLeast(0L)
             exo.release()
             if (player === exo) player = null
         }
@@ -402,6 +406,7 @@ private fun MultiVideoPlayer(
     ContentFrame(
         player = player,
         modifier = Modifier.fillMaxSize(),
-        contentScale = ContentScale.Crop,
+        // Fit, not Crop: cells 2-4 are narrower than the video, so Crop was cutting them off.
+        contentScale = ContentScale.Fit,
     )
 }

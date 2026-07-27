@@ -17,12 +17,16 @@ import com.mousy.myrandomgallery.data.model.GridMode
 import com.mousy.myrandomgallery.data.model.MediaItem
 import com.mousy.myrandomgallery.data.model.MediaType
 import com.mousy.myrandomgallery.data.model.MultiVideoState
+import com.mousy.myrandomgallery.data.model.SamplingDefaults
 import com.mousy.myrandomgallery.data.model.SlideshowSpeeds
 import com.mousy.myrandomgallery.data.model.SnackMessage
-import com.mousy.myrandomgallery.data.model.TabFeatures
 import com.mousy.myrandomgallery.data.model.ThemeMode
-import com.mousy.myrandomgallery.data.preferences.SettingsRepository
+import com.mousy.myrandomgallery.data.model.newShuffleSeed
 import com.mousy.myrandomgallery.data.model.sanitized
+import com.mousy.myrandomgallery.data.model.seededSample
+import com.mousy.myrandomgallery.data.preferences.SettingsRepository
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -30,6 +34,9 @@ import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.flowOn
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
@@ -47,149 +54,85 @@ class GalleryViewModel(application: Application) : AndroidViewModel(application)
 
     private val _allMedia = MutableStateFlow<List<MediaItem>>(emptyList())
     private val _folderFavourites = MutableStateFlow<List<MediaItem>>(emptyList())
-    private val _shuffleOrder = MutableStateFlow<List<String>>(emptyList())
     private val _deletedKeys = MutableStateFlow<Set<String>>(emptySet())
     private val _discoveredFolders = MutableStateFlow<List<MediaRepository.FolderInfo>>(emptyList())
 
-    private val _currentTab = MutableStateFlow(AppTab.GALLERY)
-    val currentTab: StateFlow<AppTab> = _currentTab.asStateFlow()
+    /** Current random draw. One Long reproduces the whole gallery order (see [seededSample]). */
+    private val _shuffleSeed = MutableStateFlow(newShuffleSeed())
 
-    private val _viewerOpen = MutableStateFlow(false)
-    private val _viewerList = MutableStateFlow<List<String>>(emptyList())
-    private val _viewerIndex = MutableStateFlow(0)
-    private val _viewerPlaying = MutableStateFlow(false)
-    private val _viewerChrome = MutableStateFlow(true)
-    private val _viewerMenuOpen = MutableStateFlow(false)
-    private val _viewerReturnTab = MutableStateFlow(AppTab.GALLERY)
-    /** True only when opened from the Slideshow tab (autoplay + timing controls). */
-    private val _viewerSlideshowMode = MutableStateFlow(false)
-    /** Mute persists across viewer items. */
-    private val _viewerMuted = MutableStateFlow(false)
-    /** Bumps when user interacts with chrome so auto-hide timer resets. */
-    private val _viewerChromeNonce = MutableStateFlow(0)
-    private val _speedMenuOpen = MutableStateFlow(false)
-    private val _detailsOpen = MutableStateFlow(false)
-    private val _customSpeedOpen = MutableStateFlow(false)
-    private val _customSpeedSeconds = MutableStateFlow(8)
+    /** How many items of the library the gallery prepares; grows as the user keeps browsing. */
+    private val _sampleLimit = MutableStateFlow(SamplingDefaults.MIN_SAMPLE)
 
-    private val _selectMode = MutableStateFlow(false)
-    private val _selectedKeys = MutableStateFlow<Set<String>>(emptySet())
-    private val _confirmDeleteKeys = MutableStateFlow<List<String>?>(null)
-    private val _confirmResetSettings = MutableStateFlow(false)
-    private val _hiddenFoldersDialog = MutableStateFlow(false)
-    private val _favTypeMenuOpen = MutableStateFlow(false)
-    private val _recentTypeMenuOpen = MutableStateFlow(false)
-    private val _collapsedGroups = MutableStateFlow<Set<String>>(emptySet())
     private val _albumOpen = MutableStateFlow<String?>(null)
-    private val _multiVideo = MutableStateFlow(MultiVideoState())
-    private val _snack = MutableStateFlow<SnackMessage?>(null)
-    private val _isLoading = MutableStateFlow(false)
-    private val _pendingUndoDeletes = MutableStateFlow<List<String>>(emptyList())
+    private val _viewerUi = MutableStateFlow(ViewerUi())
+    private val _shellUi = MutableStateFlow(ShellUi())
+    private val _transient = MutableStateFlow(TransientUi())
+
     private var pendingUndoSettings: AppSettings? = null
 
     private var slideshowJob: Job? = null
     private var snackJob: Job? = null
     private var mvOverlayJob: Job? = null
     private var refreshJob: Job? = null
+    private var countsJob: Job? = null
     private var persistShuffleJob: Job? = null
 
-    /** History of gallery shuffle orders; swipe-back restores previous sets. Cap = 40. */
-    private val shuffleHistory = mutableListOf<List<String>>()
-    private var historyIndex = -1
+    /** Seed history; swipe-back restores previous random sets. Cap = [MAX_SHUFFLE_HISTORY]. */
+    private val shuffleSeeds = mutableListOf<Long>()
+    private var seedIndex = -1
     private var lastMediaScanKey: String? = null
-    private var shuffleRestored = false
+    private var settingsRestored = false
+    private var refreshToken = 0
 
-    @Suppress("UNCHECKED_CAST")
+    /** Distinct items opened this app session — feeds the adaptive sample size. */
+    private val sessionViewedKeys = HashSet<String>()
+    private var sessionBaselineAvg = SamplingDefaults.INITIAL_AVG_VIEWED
+
+    /**
+     * The expensive half of the UI state. Kept apart from viewer/chrome/menu toggles so that
+     * tapping a button never re-filters or re-sorts a 10k library, and computed on
+     * [Dispatchers.Default] so it can never block the frame loop.
+     */
+    private val libraryState: StateFlow<LibraryState> = combine(
+        _settings.map { it.toLibraryInputs() }.distinctUntilChanged(),
+        combine(_allMedia, _folderFavourites, _deletedKeys, _discoveredFolders) { media, favs, deleted, folders ->
+            LibrarySources(media, favs, deleted, folders)
+        },
+        combine(_shuffleSeed, _sampleLimit, _albumOpen) { seed, limit, album ->
+            SampleInputs(seed, limit, album)
+        },
+    ) { inputs, sources, sample ->
+        buildLibraryState(inputs, sources, sample)
+    }
+        .flowOn(Dispatchers.Default)
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), LibraryState())
+
     val uiState: StateFlow<GalleryUiState> = combine(
         _settings,
-        _allMedia,
-        _folderFavourites,
-        _shuffleOrder,
-        _deletedKeys,
-        _discoveredFolders,
-        _currentTab,
-        _viewerOpen,
-        _viewerList,
-        _viewerIndex,
-        _viewerPlaying,
-        _viewerChrome,
-        _viewerMenuOpen,
-        _speedMenuOpen,
-        _detailsOpen,
-        _customSpeedOpen,
-        _customSpeedSeconds,
-        _selectMode,
-        _selectedKeys,
-        _confirmDeleteKeys,
-        _hiddenFoldersDialog,
-        _favTypeMenuOpen,
-        _collapsedGroups,
-        _albumOpen,
-        _multiVideo,
-        _snack,
-        _isLoading,
-        _viewerSlideshowMode,
-        _confirmResetSettings,
-        _recentTypeMenuOpen,
-        _viewerMuted,
-        _viewerChromeNonce,
-    ) { values ->
-        buildUiState(
-            settings = (values[0] as AppSettings).sanitized(),
-            allMedia = values[1] as List<MediaItem>,
-            folderFavourites = values[2] as List<MediaItem>,
-            shuffleOrder = values[3] as List<String>,
-            deleted = values[4] as Set<String>,
-            discovered = values[5] as List<MediaRepository.FolderInfo>,
-            tab = values[6] as AppTab,
-            viewerOpen = values[7] as Boolean,
-            viewerList = values[8] as List<String>,
-            viewerIndex = values[9] as Int,
-            viewerPlaying = values[10] as Boolean,
-            viewerChrome = values[11] as Boolean,
-            viewerMenuOpen = values[12] as Boolean,
-            speedMenuOpen = values[13] as Boolean,
-            detailsOpen = values[14] as Boolean,
-            customSpeedOpen = values[15] as Boolean,
-            customSpeedSeconds = values[16] as Int,
-            selectMode = values[17] as Boolean,
-            selectedKeys = values[18] as Set<String>,
-            confirmDelete = values[19] as List<String>?,
-            hiddenDialog = values[20] as Boolean,
-            favTypeMenu = values[21] as Boolean,
-            collapsed = values[22] as Set<String>,
-            albumOpen = values[23] as String?,
-            multiVideo = values[24] as MultiVideoState,
-            snack = values[25] as SnackMessage?,
-            loading = values[26] as Boolean,
-            viewerSlideshowMode = values[27] as Boolean,
-            confirmReset = values[28] as Boolean,
-            recentTypeMenu = values[29] as Boolean,
-            viewerMuted = values[30] as Boolean,
-            viewerChromeNonce = values[31] as Int,
-        )
+        libraryState,
+        _viewerUi,
+        _shellUi,
+        _transient,
+    ) { settings, library, viewer, shell, transient ->
+        assembleUiState(settings, library, viewer, shell, transient)
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), GalleryUiState())
 
     init {
         viewModelScope.launch {
-            settingsRepo.settingsFlow.collect { s ->
-                _settings.value = s.sanitized()
-                if (!shuffleRestored && s.shuffleHistoryEncoded.isNotBlank()) {
-                    restoreShuffleHistory(s.sanitized())
-                    shuffleRestored = true
-                } else if (!shuffleRestored) {
-                    shuffleRestored = true
+            settingsRepo.settingsFlow.collect { raw ->
+                val s = raw.sanitized()
+                _settings.value = s
+                if (!settingsRestored) {
+                    settingsRestored = true
+                    sessionBaselineAvg = s.avgViewedPerSession
+                    restoreShuffleSeeds(s)
                 }
-                val key = mediaScanKey(s.sanitized())
+                val key = mediaScanKey(s)
                 if (key != lastMediaScanKey) {
                     lastMediaScanKey = key
                     refreshMedia()
                 }
             }
-        }
-        // Folder discovery once at start (and after media-relevant setting changes via refreshMedia)
-        viewModelScope.launch {
-            _discoveredFolders.value = mediaRepo.discoverFolders(_settings.value.hiddenFolders)
         }
     }
 
@@ -197,44 +140,64 @@ class GalleryViewModel(application: Application) : AndroidViewModel(application)
 
     fun refreshMedia() {
         refreshJob?.cancel()
+        // A cancelled scan must not clear the spinner belonging to the scan that replaced it.
+        val token = ++refreshToken
         refreshJob = viewModelScope.launch {
             delay(180)
-            _isLoading.value = true
-            val s = _settings.value
-            val media = mediaRepo.scanMedia(
-                selectedFolders = s.selectedFolders,
-                safTreeUris = s.safTreeUris,
-                hiddenFolders = s.hiddenFolders,
-                fileTypeFilters = effectiveFileTypes(s),
-            )
-            _allMedia.value = media
-            _discoveredFolders.value = mediaRepo.discoverFolders(s.hiddenFolders)
-            val known = media.map { it.stableKey }.toSet()
-            if (_shuffleOrder.value.isEmpty()) {
-                val initial = media.map { it.stableKey }.shuffled()
-                _shuffleOrder.value = initial
-                resetShuffleHistory(initial)
-            } else {
-                val pruned = _shuffleOrder.value.filter { it in known } +
-                    media.map { it.stableKey }.filter { it !in _shuffleOrder.value.toSet() }
-                _shuffleOrder.value = pruned
-                // Keep history entries consistent with live keys
-                for (i in shuffleHistory.indices) {
-                    shuffleHistory[i] = shuffleHistory[i].filter { it in known }
+            _transient.update { it.copy(loading = true) }
+            try {
+                val s = _settings.value
+                val media = mediaRepo.scanMedia(
+                    selectedFolders = s.selectedFolders,
+                    safTreeUris = s.safTreeUris,
+                    hiddenFolders = s.hiddenFolders,
+                    fileTypeFilters = effectiveFileTypes(s.fileTypes),
+                )
+                _allMedia.value = media
+                _sampleLimit.value = SamplingDefaults.sampleSizeFor(s.avgViewedPerSession, media.size)
+                _discoveredFolders.value = mediaRepo.discoverFolders(s.hiddenFolders)
+                autoConfigureFileTypes(media, s)
+                refreshFolderFavourites(_settings.value)
+                // File-type counts are a separate, cancellable pass (Settings-only data).
+                if (_settings.value.discoveredFileTypeCounts.isEmpty() && media.isNotEmpty()) {
+                    refreshFileTypeCounts()
                 }
+            } finally {
+                if (token == refreshToken) _transient.update { it.copy(loading = false) }
             }
-            autoConfigureFileTypes(media, s)
-            // Remember extension counts for Settings (all types under selection)
-            val counts = mediaRepo.discoverExtensionCounts(
-                selectedFolders = s.selectedFolders,
-                safTreeUris = s.safTreeUris,
-                hiddenFolders = s.hiddenFolders,
-            )
-            if (counts != s.discoveredFileTypeCounts) {
-                persistSettings { it.copy(discoveredFileTypeCounts = counts) }
+        }
+    }
+
+    /**
+     * Recounts every extension under the selected folders. This walks the whole library, so it
+     * runs on demand rather than as part of loading the gallery; Settings shows the previous
+     * numbers until it finishes.
+     */
+    fun refreshFileTypeCounts() {
+        if (countsJob?.isActive == true) return
+        countsJob = viewModelScope.launch {
+            _transient.update { it.copy(countsRefreshing = true) }
+            try {
+                val s = _settings.value
+                val counts = mediaRepo.discoverExtensionCounts(
+                    selectedFolders = s.selectedFolders,
+                    safTreeUris = s.safTreeUris,
+                    hiddenFolders = s.hiddenFolders,
+                )
+                persistSettings {
+                    it.copy(
+                        discoveredFileTypeCounts = counts,
+                        fileTypeCountsScannedAtMs = System.currentTimeMillis(),
+                    )
+                }
+            } catch (ce: CancellationException) {
+                throw ce
+            } catch (t: Throwable) {
+                android.util.Log.e("GalleryVM", "File-type count scan failed", t)
+                showSnack("Could not refresh file counts")
+            } finally {
+                _transient.update { it.copy(countsRefreshing = false) }
             }
-            refreshFolderFavourites(s)
-            _isLoading.value = false
         }
     }
 
@@ -243,7 +206,7 @@ class GalleryViewModel(application: Application) : AndroidViewModel(application)
         if (s.copyFavs && s.copyFavTreeUri.isNotBlank()) {
             _folderFavourites.value = mediaRepo.scanSafTree(
                 treeUri = s.copyFavTreeUri,
-                fileTypeFilters = effectiveFileTypes(s),
+                fileTypeFilters = effectiveFileTypes(s.fileTypes),
             )
         } else {
             _folderFavourites.value = emptyList()
@@ -263,61 +226,45 @@ class GalleryViewModel(application: Application) : AndroidViewModel(application)
             s.hiddenFolders.entries.sortedBy { it.key }.joinToString(",") { "${it.key}=${it.value}" },
         ).joinToString("|")
 
-    private fun resetShuffleHistory(order: List<String>) {
-        shuffleHistory.clear()
-        shuffleHistory += order
-        historyIndex = 0
-        persistShuffleHistory()
+    private fun restoreShuffleSeeds(s: AppSettings) {
+        shuffleSeeds.clear()
+        shuffleSeeds.addAll(s.shuffleSeeds.takeLast(MAX_SHUFFLE_HISTORY))
+        if (shuffleSeeds.isEmpty()) {
+            shuffleSeeds += newShuffleSeed()
+            seedIndex = 0
+            persistShuffleSeeds()
+        } else {
+            seedIndex = s.shuffleSeedIndex.coerceIn(0, shuffleSeeds.lastIndex)
+        }
+        _shuffleSeed.value = shuffleSeeds[seedIndex]
     }
 
-    private fun restoreShuffleHistory(s: AppSettings) {
-        val pages = decodeShuffleHistory(s.shuffleHistoryEncoded)
-        if (pages.isEmpty()) return
-        shuffleHistory.clear()
-        shuffleHistory.addAll(pages)
-        historyIndex = s.shuffleHistoryIndex.coerceIn(0, shuffleHistory.lastIndex)
-        _shuffleOrder.value = shuffleHistory.getOrElse(historyIndex) { pages.last() }
-    }
-
-    private fun persistShuffleHistory() {
+    private fun persistShuffleSeeds() {
         persistShuffleJob?.cancel()
+        val seeds = shuffleSeeds.toList()
+        val idx = seedIndex.coerceAtLeast(0)
         persistShuffleJob = viewModelScope.launch {
             delay(250)
-            val encoded = encodeShuffleHistory(shuffleHistory)
-            val idx = historyIndex.coerceAtLeast(0)
-            persistSettings {
-                it.copy(shuffleHistoryEncoded = encoded, shuffleHistoryIndex = idx)
-            }
+            persistSettings { it.copy(shuffleSeeds = seeds, shuffleSeedIndex = idx) }
         }
-    }
-
-    private fun encodeShuffleHistory(pages: List<List<String>>): String =
-        pages.takeLast(40).joinToString(";") { page -> page.joinToString("|") }
-
-    private fun decodeShuffleHistory(raw: String): List<List<String>> {
-        if (raw.isBlank()) return emptyList()
-        return raw.split(';')
-            .map { page -> page.split('|').filter { it.isNotBlank() } }
-            .filter { it.isNotEmpty() }
-            .takeLast(40)
     }
 
     private suspend fun autoConfigureFileTypes(media: List<MediaItem>, s: AppSettings) {
-        val exts = media.map { it.extension.lowercase() }.distinct()
-        if (exts.isEmpty()) return
-        val updated = s.fileTypes.toMutableMap()
-        var changed = false
-        exts.forEach { ext ->
-            if (!updated.containsKey(ext)) {
-                updated[ext] = ext in SlideshowSpeeds.supportedExtensions
-                changed = true
-            }
-        }
-        if (changed) persistSettings { it.copy(fileTypes = updated) }
+        if (media.isEmpty()) return
+        val known = s.fileTypes
+        val discovered = HashSet<String>()
+        for (item in media) discovered.add(item.extension)
+        val missing = discovered.filter { it.isNotBlank() && it !in known }
+        if (missing.isEmpty()) return
+        val updated = known.toMutableMap()
+        missing.forEach { ext -> updated[ext] = ext in SlideshowSpeeds.supportedExtensions }
+        persistSettings { it.copy(fileTypes = updated) }
+        // Adopt the new key so the settings collector doesn't treat this as a fresh rescan.
+        lastMediaScanKey = mediaScanKey(_settings.value)
     }
 
-    private fun effectiveFileTypes(s: AppSettings): Map<String, Boolean> {
-        if (s.fileTypes.isNotEmpty()) return s.fileTypes
+    private fun effectiveFileTypes(fileTypes: Map<String, Boolean>): Map<String, Boolean> {
+        if (fileTypes.isNotEmpty()) return fileTypes
         return SlideshowSpeeds.supportedExtensions.associateWith { true }
     }
 
@@ -325,30 +272,39 @@ class GalleryViewModel(application: Application) : AndroidViewModel(application)
         slideshowJob?.cancel()
         when (tab) {
             AppTab.SLIDESHOW -> {
-                val list = tabSourceList(_currentTab.value, _albumOpen.value)
+                val source = _shellUi.value.tab
+                val list = tabSourceList(source, _albumOpen.value)
                 if (list.isNotEmpty()) {
-                    openViewer(list, 0, autoPlay = true, slideshowMode = true)
+                    openViewer(
+                        keys = list,
+                        index = 0,
+                        autoPlay = true,
+                        slideshowMode = true,
+                        fromGallery = source != AppTab.FAV && source != AppTab.RECENT && source != AppTab.ALBUM,
+                    )
                 }
             }
             AppTab.GALLERY -> {
-                _viewerOpen.value = false
-                _viewerPlaying.value = false
-                _selectMode.value = false
-                _selectedKeys.value = emptySet()
+                closeViewerState()
                 _albumOpen.value = null
-                _currentTab.value = AppTab.GALLERY
+                _shellUi.update {
+                    it.copy(tab = AppTab.GALLERY, selectMode = false, selectedKeys = emptySet())
+                }
                 // Wireframe: tapping Gallery always produces a fresh random set.
                 shuffleGrid(direction = 1)
             }
             else -> {
-                _viewerOpen.value = false
-                _viewerPlaying.value = false
-                _selectMode.value = false
-                _selectedKeys.value = emptySet()
+                closeViewerState()
                 if (tab != AppTab.ALBUM) _albumOpen.value = null
-                _currentTab.value = tab
+                _shellUi.update { it.copy(tab = tab, selectMode = false, selectedKeys = emptySet()) }
                 if (tab == AppTab.MULTIVIDEO) showMultiVideoOverlay()
             }
+        }
+    }
+
+    private fun closeViewerState() {
+        _viewerUi.update {
+            it.copy(open = false, playing = false, menuOpen = false, speedMenuOpen = false, detailsOpen = false)
         }
     }
 
@@ -367,33 +323,39 @@ class GalleryViewModel(application: Application) : AndroidViewModel(application)
     }
 
     fun shuffleGrid(direction: Int = 1) {
-        when {
-            // Swipe back → restore previous random set (history), not a fresh shuffle
-            direction < 0 && historyIndex > 0 -> {
-                historyIndex--
-                _shuffleOrder.value = shuffleHistory[historyIndex]
-                persistShuffleHistory()
+        if (shuffleSeeds.isEmpty()) {
+            shuffleSeeds += newShuffleSeed()
+            seedIndex = 0
+        } else if (direction < 0 && seedIndex > 0) {
+            // Swipe back → replay the previous random set from its seed.
+            seedIndex--
+        } else {
+            while (shuffleSeeds.size > seedIndex + 1) {
+                shuffleSeeds.removeAt(shuffleSeeds.lastIndex)
             }
-            else -> {
-                if (historyIndex >= 0 && historyIndex < shuffleHistory.lastIndex) {
-                    while (shuffleHistory.size > historyIndex + 1) {
-                        shuffleHistory.removeAt(shuffleHistory.lastIndex)
-                    }
-                }
-                val newOrder = liveOrderedKeys().shuffled()
-                shuffleHistory += newOrder
-                if (shuffleHistory.size > 40) {
-                    shuffleHistory.removeAt(0)
-                }
-                historyIndex = shuffleHistory.lastIndex
-                _shuffleOrder.value = newOrder
-                persistShuffleHistory()
-            }
+            shuffleSeeds += newShuffleSeed()
+            if (shuffleSeeds.size > MAX_SHUFFLE_HISTORY) shuffleSeeds.removeAt(0)
+            seedIndex = shuffleSeeds.lastIndex
         }
+        _shuffleSeed.value = shuffleSeeds[seedIndex]
+        persistShuffleSeeds()
     }
 
     fun onGridSwipe(direction: Int) {
         if (_settings.value.gridMode == GridMode.SWIPE) shuffleGrid(direction)
+    }
+
+    /**
+     * Widens the prepared slice once the user approaches the end of it. Draws from the same
+     * seeded order, so the extra items are new — never repeats of what's already shown.
+     */
+    fun extendSampleIfNeeded(reachedIndex: Int) {
+        val total = libraryState.value.playableCount
+        val limit = _sampleLimit.value
+        if (limit >= total) return
+        if (reachedIndex < (limit * SamplingDefaults.EXTEND_AT_FRACTION).toInt()) return
+        val batch = SamplingDefaults.sampleSizeFor(_settings.value.avgViewedPerSession, total)
+        _sampleLimit.value = (limit + batch).coerceAtMost(total)
     }
 
     fun toggleFavourite(key: String) {
@@ -451,25 +413,24 @@ class GalleryViewModel(application: Application) : AndroidViewModel(application)
     }
 
     fun toggleSelect(key: String) {
-        val sel = _selectedKeys.value.toMutableSet()
-        if (sel.contains(key)) sel.remove(key) else sel.add(key)
-        _selectedKeys.value = sel
-        _selectMode.value = sel.isNotEmpty()
+        _shellUi.update {
+            val sel = it.selectedKeys.toMutableSet()
+            if (!sel.remove(key)) sel.add(key)
+            it.copy(selectedKeys = sel, selectMode = sel.isNotEmpty())
+        }
     }
 
     fun enterSelectMode(key: String) {
-        _selectMode.value = true
-        _selectedKeys.value = _selectedKeys.value + key
+        _shellUi.update { it.copy(selectMode = true, selectedKeys = it.selectedKeys + key) }
     }
 
     fun exitSelectMode() {
-        _selectMode.value = false
-        _selectedKeys.value = emptySet()
+        _shellUi.update { it.copy(selectMode = false, selectedKeys = emptySet()) }
     }
 
     fun favouriteSelected() {
         viewModelScope.launch {
-            val keys = _selectedKeys.value
+            val keys = _shellUi.value.selectedKeys
             persistSettings { it.copy(favIds = it.favIds + keys) }
             val s = _settings.value
             if (usesFavouritesFolder(s)) {
@@ -487,120 +448,134 @@ class GalleryViewModel(application: Application) : AndroidViewModel(application)
             showDeleteDisabledPrompt()
             return
         }
-        _confirmDeleteKeys.value = _selectedKeys.value.toList()
+        _shellUi.update { it.copy(confirmDeleteKeys = it.selectedKeys.toList()) }
     }
 
-    fun openViewer(keys: List<String>, index: Int, autoPlay: Boolean = false, slideshowMode: Boolean = autoPlay) {
-        val live = keys.filter { it !in _deletedKeys.value }
+    fun openViewer(
+        keys: List<String>,
+        index: Int,
+        autoPlay: Boolean = false,
+        slideshowMode: Boolean = autoPlay,
+        fromGallery: Boolean = false,
+    ) {
+        val deleted = _deletedKeys.value
+        val live = if (deleted.isEmpty()) keys else keys.filter { it !in deleted }
         if (live.isEmpty()) return
-        if (!_viewerOpen.value) {
-            val ret = _currentTab.value
-            _viewerReturnTab.value = if (ret == AppTab.SLIDESHOW) AppTab.GALLERY else ret
+        val currentTab = _shellUi.value.tab
+        _viewerUi.update { v ->
+            val ret = if (v.open) v.returnTab else {
+                if (currentTab == AppTab.SLIDESHOW) AppTab.GALLERY else currentTab
+            }
+            v.copy(
+                open = true,
+                keys = live,
+                index = index.coerceIn(0, live.lastIndex),
+                chrome = true,
+                menuOpen = false,
+                speedMenuOpen = false,
+                detailsOpen = false,
+                slideshowMode = slideshowMode,
+                playing = slideshowMode && autoPlay,
+                returnTab = ret,
+                fromGallery = fromGallery,
+            )
         }
-        _viewerList.value = live
-        _viewerIndex.value = index.coerceIn(0, live.lastIndex)
-        _viewerOpen.value = true
-        _viewerChrome.value = true
-        _viewerMenuOpen.value = false
-        _speedMenuOpen.value = false
-        _detailsOpen.value = false
-        _viewerSlideshowMode.value = slideshowMode
         // View mode keeps the source tab selected; slideshow mode selects Slideshow.
-        if (slideshowMode) {
-            _currentTab.value = AppTab.SLIDESHOW
-        }
-        _viewerPlaying.value = slideshowMode && autoPlay
-        if (_viewerPlaying.value) scheduleSlideshow() else slideshowJob?.cancel()
+        if (slideshowMode) _shellUi.update { it.copy(tab = AppTab.SLIDESHOW) }
+        noteViewed(_viewerUi.value.currentKey())
+        if (_viewerUi.value.playing) scheduleSlideshow() else slideshowJob?.cancel()
     }
 
     fun closeViewer() {
         slideshowJob?.cancel()
-        _viewerOpen.value = false
-        _viewerPlaying.value = false
-        _viewerSlideshowMode.value = false
-        _viewerMenuOpen.value = false
-        _speedMenuOpen.value = false
-        _detailsOpen.value = false
-        _currentTab.value = _viewerReturnTab.value
+        val returnTab = _viewerUi.value.returnTab
+        _viewerUi.update {
+            it.copy(
+                open = false,
+                playing = false,
+                slideshowMode = false,
+                menuOpen = false,
+                speedMenuOpen = false,
+                detailsOpen = false,
+            )
+        }
+        _shellUi.update { it.copy(tab = returnTab) }
+        persistViewingHabit()
     }
 
     /** System back / predictive back — returns true if the event was consumed. */
     fun handleSystemBack(): Boolean {
+        val viewer = _viewerUi.value
+        val shell = _shellUi.value
         when {
-            _viewerMenuOpen.value -> {
-                _viewerMenuOpen.value = false
-                return true
-            }
-            _speedMenuOpen.value -> {
-                _speedMenuOpen.value = false
-                return true
-            }
-            _detailsOpen.value -> {
-                closeDetails()
-                return true
-            }
-            _customSpeedOpen.value -> {
-                dismissCustomSpeed()
-                return true
-            }
-            _confirmDeleteKeys.value != null -> {
-                cancelDelete()
-                return true
-            }
-            _confirmResetSettings.value -> {
-                cancelResetSettings()
-                return true
-            }
-            _hiddenFoldersDialog.value -> {
-                closeHiddenFoldersDialog()
-                return true
-            }
-            _multiVideo.value.pickerIndex != null -> {
-                closeMultiVideoPicker()
-                return true
-            }
-            _viewerOpen.value -> {
-                closeViewer()
-                return true
-            }
-            _albumOpen.value != null -> {
-                closeAlbum()
-                return true
-            }
-            _selectMode.value -> {
-                exitSelectMode()
-                return true
-            }
+            viewer.menuOpen -> _viewerUi.update { it.copy(menuOpen = false) }
+            viewer.speedMenuOpen -> _viewerUi.update { it.copy(speedMenuOpen = false) }
+            viewer.detailsOpen -> closeDetails()
+            viewer.customSpeedOpen -> dismissCustomSpeed()
+            shell.confirmDeleteKeys != null -> cancelDelete()
+            shell.confirmResetSettings -> cancelResetSettings()
+            shell.hiddenFoldersDialog -> closeHiddenFoldersDialog()
+            _transient.value.multiVideo.pickerIndex != null -> closeMultiVideoPicker()
+            viewer.open -> closeViewer()
+            _albumOpen.value != null -> closeAlbum()
+            shell.selectMode -> exitSelectMode()
             else -> return false
         }
+        return true
     }
 
     fun toggleViewerChrome() {
-        _viewerChrome.value = !_viewerChrome.value
-        if (_viewerChrome.value) _viewerChromeNonce.value++
+        _viewerUi.update {
+            val visible = !it.chrome
+            it.copy(chrome = visible, chromeNonce = if (visible) it.chromeNonce + 1 else it.chromeNonce)
+        }
     }
 
     fun noteViewerInteraction() {
-        if (_viewerChrome.value) _viewerChromeNonce.value++
+        _viewerUi.update { if (it.chrome) it.copy(chromeNonce = it.chromeNonce + 1) else it }
     }
 
-    fun toggleViewerMute() { _viewerMuted.value = !_viewerMuted.value }
+    fun toggleViewerMute() = _viewerUi.update { it.copy(muted = !it.muted) }
 
     fun viewerNavigate(delta: Int) {
-        val list = _viewerList.value.filter { it !in _deletedKeys.value }
-        if (list.isEmpty()) return
-        var idx = _viewerIndex.value + delta
-        if (idx < 0) idx = list.lastIndex
-        if (idx > list.lastIndex) idx = 0
-        _viewerIndex.value = idx
-        _viewerList.value = list
+        _viewerUi.update { v ->
+            if (v.keys.isEmpty()) return@update v
+            var idx = v.index + delta
+            if (idx < 0) idx = v.keys.lastIndex
+            if (idx > v.keys.lastIndex) idx = 0
+            v.copy(index = idx)
+        }
+        noteViewed(_viewerUi.value.currentKey())
+        if (_viewerUi.value.fromGallery) {
+            extendSampleIfNeeded(_viewerUi.value.index)
+            adoptExtendedGallery()
+        }
         // Keep chrome vanished if it was vanished — do not force-show on advance.
-        if (_viewerPlaying.value) scheduleSlideshow()
+        if (_viewerUi.value.playing) scheduleSlideshow()
+    }
+
+    /**
+     * Picks up items added by [extendSampleIfNeeded] while the viewer is open. The seeded draw
+     * only ever appends, so the viewer's existing keys and index stay valid.
+     */
+    private fun adoptExtendedGallery() {
+        val v = _viewerUi.value
+        if (!v.open || !v.fromGallery) return
+        val gallery = libraryState.value.gallery
+        if (gallery.size <= v.keys.size) return
+        val deleted = _deletedKeys.value
+        val extra = gallery.asSequence()
+            .drop(v.keys.size)
+            .map { it.stableKey }
+            .filter { it !in deleted }
+            .toList()
+        if (extra.isEmpty()) return
+        _viewerUi.update { it.copy(keys = it.keys + extra) }
     }
 
     /** Called when a video finishes in the viewer (loop disabled). */
     fun onViewerVideoEnded() {
-        if (_viewerSlideshowMode.value) {
+        if (_viewerUi.value.slideshowMode) {
             // Slideshow + no loop → advance to next item
             advanceSlideshowAfterVideo()
         }
@@ -608,23 +583,23 @@ class GalleryViewModel(application: Application) : AndroidViewModel(application)
     }
 
     private fun advanceSlideshowAfterVideo() {
-        val list = _viewerList.value.filter { it !in _deletedKeys.value }
-        if (list.isEmpty()) {
-            _viewerPlaying.value = false
+        val v = _viewerUi.value
+        if (v.keys.isEmpty()) {
+            _viewerUi.update { it.copy(playing = false) }
             return
         }
-        var next = _viewerIndex.value + 1
-        val s = _settings.value.sanitized()
-        if (next >= list.size) {
-            if (s.dontLoop) {
+        var next = v.index + 1
+        if (next >= v.keys.size) {
+            if (_settings.value.dontLoop) {
                 // At end of list and "don't loop" — stop slideshow
-                _viewerPlaying.value = false
+                _viewerUi.update { it.copy(playing = false) }
                 return
             }
             next = 0
         }
-        _viewerIndex.value = next
-        if (_viewerPlaying.value) scheduleSlideshow()
+        _viewerUi.update { it.copy(index = next) }
+        noteViewed(_viewerUi.value.currentKey())
+        if (_viewerUi.value.playing) scheduleSlideshow()
     }
 
     fun viewerSwipeUpDelete() {
@@ -637,52 +612,46 @@ class GalleryViewModel(application: Application) : AndroidViewModel(application)
             showDeleteDisabledPrompt()
             return
         }
-        val key = currentViewerKey() ?: return
-        _confirmDeleteKeys.value = listOf(key)
+        val key = _viewerUi.value.currentKey() ?: return
+        _shellUi.update { it.copy(confirmDeleteKeys = listOf(key)) }
     }
 
     fun togglePlayPause() {
-        _viewerPlaying.value = !_viewerPlaying.value
-        if (_viewerPlaying.value) scheduleSlideshow() else slideshowJob?.cancel()
+        _viewerUi.update { it.copy(playing = !it.playing) }
+        if (_viewerUi.value.playing) scheduleSlideshow() else slideshowJob?.cancel()
     }
 
     fun setSpeedIndex(index: Int) {
         if (index == SlideshowSpeeds.CUSTOM_INDEX) {
-            _customSpeedOpen.value = true
-            _customSpeedSeconds.value = (_settings.value.customMs / 1000).toInt().coerceAtLeast(1)
-            _speedMenuOpen.value = false
+            val seconds = (_settings.value.customMs / 1000).toInt().coerceAtLeast(1)
+            _viewerUi.update {
+                it.copy(customSpeedOpen = true, customSpeedSeconds = seconds, speedMenuOpen = false)
+            }
             return
         }
         persistSettings { it.copy(speedIdx = index) }
-        _speedMenuOpen.value = false
-        if (_viewerPlaying.value) scheduleSlideshow()
+        _viewerUi.update { it.copy(speedMenuOpen = false) }
+        if (_viewerUi.value.playing) scheduleSlideshow()
     }
 
     fun confirmCustomSpeed(seconds: Int) {
         val v = seconds.coerceAtLeast(1)
         persistSettings { it.copy(customMs = v * 1000L, speedIdx = SlideshowSpeeds.CUSTOM_INDEX) }
-        _customSpeedOpen.value = false
-        if (_viewerPlaying.value) scheduleSlideshow()
+        _viewerUi.update { it.copy(customSpeedOpen = false) }
+        if (_viewerUi.value.playing) scheduleSlideshow()
     }
 
-    fun dismissCustomSpeed() { _customSpeedOpen.value = false }
+    fun dismissCustomSpeed() = _viewerUi.update { it.copy(customSpeedOpen = false) }
 
-    fun toggleSpeedMenu() {
-        _speedMenuOpen.value = !_speedMenuOpen.value
-        _viewerMenuOpen.value = false
-    }
+    fun toggleSpeedMenu() =
+        _viewerUi.update { it.copy(speedMenuOpen = !it.speedMenuOpen, menuOpen = false) }
 
-    fun toggleViewerMenu() {
-        _viewerMenuOpen.value = !_viewerMenuOpen.value
-        _speedMenuOpen.value = false
-    }
+    fun toggleViewerMenu() =
+        _viewerUi.update { it.copy(menuOpen = !it.menuOpen, speedMenuOpen = false) }
 
-    fun openDetails() {
-        _detailsOpen.value = true
-        _viewerMenuOpen.value = false
-    }
+    fun openDetails() = _viewerUi.update { it.copy(detailsOpen = true, menuOpen = false) }
 
-    fun closeDetails() { _detailsOpen.value = false }
+    fun closeDetails() = _viewerUi.update { it.copy(detailsOpen = false) }
 
     fun shareCurrentItem(): Intent? {
         val item = currentViewerItem() ?: return null
@@ -698,30 +667,34 @@ class GalleryViewModel(application: Application) : AndroidViewModel(application)
             showDeleteDisabledPrompt()
             return
         }
-        currentViewerKey()?.let { _confirmDeleteKeys.value = listOf(it) }
+        _viewerUi.value.currentKey()?.let { key ->
+            _shellUi.update { it.copy(confirmDeleteKeys = listOf(key)) }
+        }
     }
 
-    fun cancelDelete() { _confirmDeleteKeys.value = null }
+    fun cancelDelete() = _shellUi.update { it.copy(confirmDeleteKeys = null) }
 
     fun confirmDelete() {
-        val keys = _confirmDeleteKeys.value ?: return
-        _confirmDeleteKeys.value = null
-        _deletedKeys.value = _deletedKeys.value + keys
-        _selectedKeys.value = emptySet()
-        _selectMode.value = false
-        val live = _viewerList.value.filter { it !in _deletedKeys.value }
-        if (_viewerOpen.value && live.isEmpty()) closeViewer()
-        else if (_viewerOpen.value) {
-            _viewerIndex.value = _viewerIndex.value.coerceAtMost(live.lastIndex.coerceAtLeast(0))
-            _viewerList.value = live
+        val keys = _shellUi.value.confirmDeleteKeys ?: return
+        _shellUi.update {
+            it.copy(confirmDeleteKeys = null, selectedKeys = emptySet(), selectMode = false)
         }
-        _pendingUndoDeletes.value = keys
+        val deleted = _deletedKeys.value + keys
+        _deletedKeys.value = deleted
+
+        val live = _viewerUi.value.keys.filter { it !in deleted }
+        if (_viewerUi.value.open && live.isEmpty()) {
+            closeViewer()
+        } else if (_viewerUi.value.open) {
+            _viewerUi.update {
+                it.copy(keys = live, index = it.index.coerceAtMost(live.lastIndex.coerceAtLeast(0)))
+            }
+        }
         showSnack(
             if (keys.size > 1) "${keys.size} files deleted" else "File deleted",
             "Undo",
         ) {
             _deletedKeys.value = _deletedKeys.value - keys.toSet()
-            _pendingUndoDeletes.value = emptyList()
         }
     }
 
@@ -729,11 +702,11 @@ class GalleryViewModel(application: Application) : AndroidViewModel(application)
         showSnack("Delete is disabled. Turn it back on in More → Playback & Safety.")
     }
 
-    fun requestResetSettings() { _confirmResetSettings.value = true }
-    fun cancelResetSettings() { _confirmResetSettings.value = false }
+    fun requestResetSettings() = _shellUi.update { it.copy(confirmResetSettings = true) }
+    fun cancelResetSettings() = _shellUi.update { it.copy(confirmResetSettings = false) }
 
     fun confirmResetSettings() {
-        _confirmResetSettings.value = false
+        _shellUi.update { it.copy(confirmResetSettings = false) }
         viewModelScope.launch {
             val previous = _settings.value
             pendingUndoSettings = previous
@@ -777,15 +750,11 @@ class GalleryViewModel(application: Application) : AndroidViewModel(application)
     fun setListWindow(window: FavWindow) = setFavWindow(window)
 
     fun toggleFavType(key: String) {
-        persistSettings { s ->
-            s.copy(favTypes = toggleTypeFilter(s.favTypes, key))
-        }
+        persistSettings { s -> s.copy(favTypes = toggleTypeFilter(s.favTypes, key)) }
     }
 
     fun toggleRecentType(key: String) {
-        persistSettings { s ->
-            s.copy(recentTypes = toggleTypeFilter(s.recentTypes, key))
-        }
+        persistSettings { s -> s.copy(recentTypes = toggleTypeFilter(s.recentTypes, key)) }
     }
 
     private fun toggleTypeFilter(ft: FileTypeFilter, key: String): FileTypeFilter {
@@ -800,8 +769,8 @@ class GalleryViewModel(application: Application) : AndroidViewModel(application)
         return if (anyOn) updated else ft
     }
 
-    fun toggleFavTypeMenu() { _favTypeMenuOpen.value = !_favTypeMenuOpen.value }
-    fun toggleRecentTypeMenu() { _recentTypeMenuOpen.value = !_recentTypeMenuOpen.value }
+    fun toggleFavTypeMenu() = _shellUi.update { it.copy(favTypeMenuOpen = !it.favTypeMenuOpen) }
+    fun toggleRecentTypeMenu() = _shellUi.update { it.copy(recentTypeMenuOpen = !it.recentTypeMenuOpen) }
 
     fun toggleTheme() = persistSettings {
         it.copy(themeMode = if (it.themeMode == ThemeMode.DARK) ThemeMode.LIGHT else ThemeMode.DARK)
@@ -874,8 +843,8 @@ class GalleryViewModel(application: Application) : AndroidViewModel(application)
         }
     }
 
-    fun openHiddenFoldersDialog() { _hiddenFoldersDialog.value = true }
-    fun closeHiddenFoldersDialog() { _hiddenFoldersDialog.value = false }
+    fun openHiddenFoldersDialog() = _shellUi.update { it.copy(hiddenFoldersDialog = true) }
+    fun closeHiddenFoldersDialog() = _shellUi.update { it.copy(hiddenFoldersDialog = false) }
 
     fun toggleHiddenFolder(key: String) = persistSettings { s ->
         val map = s.hiddenFolders.toMutableMap()
@@ -884,9 +853,11 @@ class GalleryViewModel(application: Application) : AndroidViewModel(application)
     }
 
     fun toggleGroupCollapsed(name: String) {
-        val c = _collapsedGroups.value.toMutableSet()
-        if (c.contains(name)) c.remove(name) else c.add(name)
-        _collapsedGroups.value = c
+        _shellUi.update {
+            val c = it.collapsedGroups.toMutableSet()
+            if (!c.remove(name)) c.add(name)
+            it.copy(collapsedGroups = c)
+        }
     }
 
     fun moveTab(tab: AppTab, direction: Int) = persistSettings { s ->
@@ -915,8 +886,8 @@ class GalleryViewModel(application: Application) : AndroidViewModel(application)
                 AppTab.ALBUM -> s.tabFeatures.copy(album = enabling)
                 else -> s.tabFeatures
             }
-            if (!enabling && _currentTab.value == tab) {
-                _currentTab.value = AppTab.GALLERY
+            if (!enabling && _shellUi.value.tab == tab) {
+                _shellUi.update { it.copy(tab = AppTab.GALLERY) }
             }
             s.copy(tabHidden = hidden, tabOrder = order, tabFeatures = features)
         }
@@ -928,7 +899,7 @@ class GalleryViewModel(application: Application) : AndroidViewModel(application)
 
     fun openAlbum(path: String) {
         _albumOpen.value = path
-        _currentTab.value = AppTab.ALBUM
+        _shellUi.update { it.copy(tab = AppTab.ALBUM) }
     }
 
     fun closeAlbum() { _albumOpen.value = null }
@@ -971,8 +942,9 @@ class GalleryViewModel(application: Application) : AndroidViewModel(application)
                 ).onSuccess { result ->
                     result.settingsJson?.let { settingsRepo.importJson(it) }
                     if (result.displayNames.isNotEmpty()) {
+                        val wanted = result.displayNames.toSet()
                         val matched = _allMedia.value
-                            .filter { it.displayName in result.displayNames.toSet() }
+                            .filter { it.displayName in wanted }
                             .map { it.stableKey }
                             .toSet()
                         if (matched.isNotEmpty()) {
@@ -1006,7 +978,7 @@ class GalleryViewModel(application: Application) : AndroidViewModel(application)
 
     fun downloadFavouritesZip(onResult: (Uri?) -> Unit) {
         viewModelScope.launch {
-            val favs = uiState.value.favourites
+            val favs = libraryState.value.favourites
             favExporter.exportFavouritesZip(favs).onSuccess { uri ->
                 onResult(uri)
                 showSnack("Zipping ${favs.size} favourites…")
@@ -1018,28 +990,28 @@ class GalleryViewModel(application: Application) : AndroidViewModel(application)
 
     fun showSnack(text: String, actionLabel: String? = null, action: (() -> Unit)? = null) {
         snackJob?.cancel()
-        _snack.value = SnackMessage(text, actionLabel, action)
+        _transient.update { it.copy(snack = SnackMessage(text, actionLabel, action)) }
         snackJob = viewModelScope.launch {
             delay(4_000)
-            _snack.value = null
+            _transient.update { it.copy(snack = null) }
         }
     }
 
-    fun dismissSnack() { _snack.value = null }
+    fun dismissSnack() = _transient.update { it.copy(snack = null) }
 
     fun runSnackAction() {
-        _snack.value?.action?.invoke()
-        _snack.value = null
+        _transient.value.snack?.action?.invoke()
+        _transient.update { it.copy(snack = null) }
     }
 
     // Multi-video — DEVICE-ONLY playback wiring in UI layer
     fun setMultiVideoCount(count: Int) {
-        _multiVideo.update { it.copy(count = count) }
+        updateMultiVideo { it.copy(count = count) }
         showMultiVideoOverlay()
     }
 
     fun toggleMultiVideoLandscape() {
-        _multiVideo.update {
+        updateMultiVideo {
             val entering = !it.landscape
             it.copy(
                 landscape = entering,
@@ -1047,16 +1019,16 @@ class GalleryViewModel(application: Application) : AndroidViewModel(application)
                 overlayVisible = !entering,
             )
         }
-        if (!_multiVideo.value.landscape) showMultiVideoOverlay()
+        if (!_transient.value.multiVideo.landscape) showMultiVideoOverlay()
     }
 
     fun exitMultiVideoLandscape() {
-        _multiVideo.update { it.copy(landscape = false, chromeVisible = true) }
+        updateMultiVideo { it.copy(landscape = false, chromeVisible = true) }
         showMultiVideoOverlay()
     }
 
     fun onMultiVideoCellTap(index: Int) {
-        val mv = _multiVideo.value
+        val mv = _transient.value.multiVideo
         val cell = mv.cells.getOrNull(index) ?: return
         if (cell.uri == null) {
             openMultiVideoPicker(index)
@@ -1064,7 +1036,7 @@ class GalleryViewModel(application: Application) : AndroidViewModel(application)
         }
         if (mv.landscape) {
             // Immersive: tap toggles chrome overlay
-            _multiVideo.update { it.copy(chromeVisible = !it.chromeVisible, overlayVisible = !it.chromeVisible) }
+            updateMultiVideo { it.copy(chromeVisible = !it.chromeVisible, overlayVisible = !it.chromeVisible) }
             return
         }
         if (!mv.overlayVisible) {
@@ -1075,35 +1047,31 @@ class GalleryViewModel(application: Application) : AndroidViewModel(application)
     }
 
     fun updateMultiVideoProgress(index: Int, progress: Float) {
-        _multiVideo.update { mv ->
-            if (index !in mv.cells.indices) return@update mv
+        updateMultiVideo { mv ->
+            if (index !in mv.cells.indices) return@updateMultiVideo mv
+            val c = mv.cells[index]
+            if (c.progress == progress) return@updateMultiVideo mv
             val cells = mv.cells.toMutableList()
-            val c = cells[index]
-            if (c.progress == progress) return@update mv
             cells[index] = c.copy(progress = progress.coerceIn(0f, 1f))
             mv.copy(cells = cells)
         }
     }
 
     fun multiVideoPlayAll() {
-        _multiVideo.update { mv ->
-            mv.copy(cells = mv.cells.mapIndexed { i, c ->
-                if (i < mv.count) c.copy(playing = true) else c
-            })
+        updateMultiVideo { mv ->
+            mv.copy(cells = mv.cells.mapIndexed { i, c -> if (i < mv.count) c.copy(playing = true) else c })
         }
         showMultiVideoOverlay()
     }
 
     fun multiVideoPauseAll() {
-        _multiVideo.update { mv ->
-            mv.copy(cells = mv.cells.mapIndexed { i, c ->
-                if (i < mv.count) c.copy(playing = false) else c
-            })
+        updateMultiVideo { mv ->
+            mv.copy(cells = mv.cells.mapIndexed { i, c -> if (i < mv.count) c.copy(playing = false) else c })
         }
     }
 
     fun multiVideoMuteAll() {
-        _multiVideo.update { mv ->
+        updateMultiVideo { mv ->
             val m = !mv.muteAll
             mv.copy(muteAll = m, cells = mv.cells.mapIndexed { i, c ->
                 if (i < mv.count) c.copy(muted = m) else c
@@ -1113,32 +1081,28 @@ class GalleryViewModel(application: Application) : AndroidViewModel(application)
     }
 
     fun toggleMultiVideoCellPlay(index: Int) {
-        _multiVideo.update { mv ->
+        updateMultiVideo { mv ->
             val cells = mv.cells.toMutableList()
-            val c = cells[index]
-            cells[index] = c.copy(playing = !c.playing)
+            cells[index] = cells[index].copy(playing = !cells[index].playing)
             mv.copy(cells = cells)
         }
         showMultiVideoOverlay()
     }
 
     fun toggleMultiVideoCellMute(index: Int) {
-        _multiVideo.update { mv ->
+        updateMultiVideo { mv ->
             val cells = mv.cells.toMutableList()
-            val c = cells[index]
-            cells[index] = c.copy(muted = !c.muted)
+            cells[index] = cells[index].copy(muted = !cells[index].muted)
             mv.copy(cells = cells)
         }
     }
 
-    fun openMultiVideoPicker(index: Int) {
-        _multiVideo.update { it.copy(pickerIndex = index) }
-    }
+    fun openMultiVideoPicker(index: Int) = updateMultiVideo { it.copy(pickerIndex = index) }
 
-    fun closeMultiVideoPicker() { _multiVideo.update { it.copy(pickerIndex = null) } }
+    fun closeMultiVideoPicker() = updateMultiVideo { it.copy(pickerIndex = null) }
 
     fun assignMultiVideo(index: Int, item: MediaItem?) {
-        _multiVideo.update { mv ->
+        updateMultiVideo { mv ->
             val cells = mv.cells.toMutableList()
             cells[index] = cells[index].copy(
                 mediaId = item?.id,
@@ -1154,7 +1118,7 @@ class GalleryViewModel(application: Application) : AndroidViewModel(application)
     }
 
     fun assignMultiVideoUri(index: Int, uri: String, displayName: String?, isAudio: Boolean) {
-        _multiVideo.update { mv ->
+        updateMultiVideo { mv ->
             val cells = mv.cells.toMutableList()
             cells[index] = cells[index].copy(
                 mediaId = null,
@@ -1171,19 +1135,24 @@ class GalleryViewModel(application: Application) : AndroidViewModel(application)
 
     fun showMultiVideoOverlay() {
         mvOverlayJob?.cancel()
-        _multiVideo.update { it.copy(overlayVisible = true) }
+        updateMultiVideo { it.copy(overlayVisible = true) }
         mvOverlayJob = viewModelScope.launch {
             delay(3_000)
-            if (_currentTab.value == AppTab.MULTIVIDEO) {
-                _multiVideo.update { it.copy(overlayVisible = false) }
+            if (_shellUi.value.tab == AppTab.MULTIVIDEO) {
+                updateMultiVideo { it.copy(overlayVisible = false) }
             }
         }
     }
 
+    private inline fun updateMultiVideo(crossinline block: (MultiVideoState) -> MultiVideoState) {
+        _transient.update { it.copy(multiVideo = block(it.multiVideo)) }
+    }
+
     private fun scheduleSlideshow() {
         slideshowJob?.cancel()
-        val s = _settings.value.sanitized()
-        if (!_viewerPlaying.value || !_viewerOpen.value || !_viewerSlideshowMode.value) return
+        val s = _settings.value
+        val v = _viewerUi.value
+        if (!v.playing || !v.open || !v.slideshowMode) return
         if (s.speedIdx == SlideshowSpeeds.OFF_INDEX) return
         val item = currentViewerItem()
         // Videos: either loop in place (dontLoop=false) or advance on STATE_ENDED.
@@ -1198,20 +1167,25 @@ class GalleryViewModel(application: Application) : AndroidViewModel(application)
         if (delayMs <= 0L) return
         slideshowJob = viewModelScope.launch {
             delay(delayMs)
-            val list = _viewerList.value.filter { it !in _deletedKeys.value }
-            if (list.isEmpty()) {
-                _viewerPlaying.value = false
+            val cur = _viewerUi.value
+            if (cur.keys.isEmpty()) {
+                _viewerUi.update { it.copy(playing = false) }
                 return@launch
             }
-            var next = _viewerIndex.value + 1
-            if (next >= list.size) {
+            var next = cur.index + 1
+            if (next >= cur.keys.size) {
                 if (s.dontLoop) {
-                    _viewerPlaying.value = false
+                    _viewerUi.update { it.copy(playing = false) }
                     return@launch
                 }
                 next = 0
             }
-            _viewerIndex.value = next
+            _viewerUi.update { it.copy(index = next) }
+            noteViewed(_viewerUi.value.currentKey())
+            if (_viewerUi.value.fromGallery) {
+                extendSampleIfNeeded(next)
+                adoptExtendedGallery()
+            }
             scheduleSlideshow()
         }
     }
@@ -1224,21 +1198,29 @@ class GalleryViewModel(application: Application) : AndroidViewModel(application)
         }
     }
 
-    private fun liveOrderedKeys(): List<String> {
-        val deleted = _deletedKeys.value
-        val order = _shuffleOrder.value.filter { it !in deleted }
-        val known = order.toSet()
-        val extras = _allMedia.value.map { it.stableKey }.filter { it !in deleted && it !in known }
-        return order + extras
+    private fun noteViewed(key: String?) {
+        if (key != null) sessionViewedKeys.add(key)
+    }
+
+    /**
+     * Folds this session's viewing count into the stored moving average. Always measured
+     * against the average captured at launch, so calling it repeatedly during one session
+     * converges instead of drifting.
+     */
+    private fun persistViewingHabit() {
+        val seen = sessionViewedKeys.size
+        if (seen <= 0) return
+        val updated = SamplingDefaults.updatedAverage(sessionBaselineAvg, seen)
+        if (kotlin.math.abs(updated - _settings.value.avgViewedPerSession) < 1f) return
+        persistSettings { it.copy(avgViewedPerSession = updated) }
     }
 
     private fun mediaByKey(key: String): MediaItem? =
         _allMedia.value.find { it.stableKey == key }
             ?: _folderFavourites.value.find { it.stableKey == key }
 
-    private fun passType(item: MediaItem, s: AppSettings): Boolean {
-        val ft = effectiveFileTypes(s)
-        if (ft.isNotEmpty() && ft.containsKey(item.extension) && ft[item.extension] == false) return false
+    private fun passType(item: MediaItem, fileTypes: Map<String, Boolean>): Boolean {
+        if (fileTypes[item.extension] == false) return false
         return when (item.mediaType) {
             MediaType.PHOTO, MediaType.VIDEO, MediaType.GIF, MediaType.AUDIO -> true
             MediaType.OTHER -> item.extension in SlideshowSpeeds.supportedExtensions
@@ -1254,170 +1236,281 @@ class GalleryViewModel(application: Application) : AndroidViewModel(application)
     }
 
     private fun tabSourceList(tab: AppTab, albumPath: String?): List<String> {
-        val state = uiState.value
+        val library = libraryState.value
         return when (tab) {
-            AppTab.FAV -> state.favourites.map { it.stableKey }
-            AppTab.RECENT -> state.recent.map { it.stableKey }
+            AppTab.FAV -> library.favourites.map { it.stableKey }
+            AppTab.RECENT -> library.recent.map { it.stableKey }
             AppTab.ALBUM -> {
-                if (albumPath != null && state.albumDetail.isNotEmpty()) {
-                    state.albumDetail.map { it.stableKey }
+                if (albumPath != null && library.albumDetail.isNotEmpty()) {
+                    library.albumDetail.map { it.stableKey }
                 } else {
-                    state.gallery.map { it.stableKey }
+                    library.gallery.map { it.stableKey }
                 }
             }
             // Settings / Multi-Video / Gallery / Slideshow fallback → gallery order
-            else -> state.gallery.map { it.stableKey }
+            else -> library.gallery.map { it.stableKey }
         }
     }
 
-    private fun currentViewerKey(): String? =
-        _viewerList.value.filter { it !in _deletedKeys.value }.getOrNull(_viewerIndex.value)
-
     private fun currentViewerItem(): MediaItem? =
-        currentViewerKey()?.let { mediaByKey(it) }
+        _viewerUi.value.currentKey()?.let { libraryState.value.lookup[it] ?: mediaByKey(it) }
 
-    private fun buildUiState(
-        settings: AppSettings,
-        allMedia: List<MediaItem>,
-        folderFavourites: List<MediaItem>,
-        shuffleOrder: List<String>,
-        deleted: Set<String>,
-        discovered: List<MediaRepository.FolderInfo>,
-        tab: AppTab,
-        viewerOpen: Boolean,
-        viewerList: List<String>,
-        viewerIndex: Int,
-        viewerPlaying: Boolean,
-        viewerChrome: Boolean,
-        viewerMenuOpen: Boolean,
-        speedMenuOpen: Boolean,
-        detailsOpen: Boolean,
-        customSpeedOpen: Boolean,
-        customSpeedSeconds: Int,
-        selectMode: Boolean,
-        selectedKeys: Set<String>,
-        confirmDelete: List<String>?,
-        hiddenDialog: Boolean,
-        favTypeMenu: Boolean,
-        collapsed: Set<String>,
-        albumOpen: String?,
-        multiVideo: MultiVideoState,
-        snack: SnackMessage?,
-        loading: Boolean,
-        viewerSlideshowMode: Boolean,
-        confirmReset: Boolean,
-        recentTypeMenu: Boolean,
-        viewerMuted: Boolean = false,
-        viewerChromeNonce: Int = 0,
-    ): GalleryUiState {
-        val safeSettings = settings.sanitized()
-        val mediaMap = allMedia.associateBy { it.stableKey }
-        val folderMap = folderFavourites.associateBy { it.stableKey }
-        val lookup = mediaMap + folderMap
-        val liveKeys = shuffleOrder.filter { it !in deleted && mediaMap.containsKey(it) } +
-            allMedia.map { it.stableKey }.filter { it !in deleted && it !in shuffleOrder.toSet() }
+    /**
+     * Single pass over the library that produces every list the UI needs. Runs off the main
+     * thread and only when the library, filters, or the random draw actually change.
+     */
+    private fun buildLibraryState(
+        inputs: LibraryInputs,
+        sources: LibrarySources,
+        sample: SampleInputs,
+    ): LibraryState {
+        val allMedia = sources.media
+        val deleted = sources.deleted
+        val fileTypes = effectiveFileTypes(inputs.fileTypes)
+        val now = System.currentTimeMillis()
 
-        val gallery = liveKeys.mapNotNull { mediaMap[it] }.filter { passType(it, safeSettings) }
-        val favWindow = FavWindow.normalize(safeSettings.favWindow)
-        val recentWindow = FavWindow.normalize(safeSettings.recentWindow)
+        val lookup = HashMap<String, MediaItem>(allMedia.size + sources.folderFavourites.size)
+        val playable = ArrayList<MediaItem>(allMedia.size)
+        for (item in allMedia) {
+            lookup[item.stableKey] = item
+            if (item.stableKey in deleted) continue
+            if (passType(item, fileTypes)) playable += item
+        }
+        // Favourites-folder copies win on key collisions, matching the previous lookup order.
+        for (item in sources.folderFavourites) lookup[item.stableKey] = item
+
+        val limit = sample.limit.coerceAtLeast(SamplingDefaults.MIN_SAMPLE)
+        val gallery = if (playable.size <= limit) playable else {
+            seededSample(playable, sample.seed, limit)
+        }
+
+        val favWindow = inputs.favWindow
         val favourites = try {
-            if (safeSettings.copyFavs && safeSettings.copyFavTreeUri.isNotBlank()) {
-                folderFavourites.filter { item ->
+            if (inputs.copyFavs && inputs.copyFavTreeUri.isNotBlank()) {
+                sources.folderFavourites.filter { item ->
                     item.stableKey !in deleted &&
-                        passFavType(item, safeSettings.favTypes) &&
-                        favWindow.matches(item.ageDays())
+                        passFavType(item, inputs.favTypes) &&
+                        favWindow.matches(item.ageDays(now))
                 }
             } else {
-                liveKeys.mapNotNull { mediaMap[it] }.filter { item ->
-                    safeSettings.favIds.contains(item.stableKey) &&
-                        passFavType(item, safeSettings.favTypes) &&
-                        favWindow.matches(item.ageDays())
+                val favIds = inputs.favIds
+                playable.filter { item ->
+                    item.stableKey in favIds &&
+                        passFavType(item, inputs.favTypes) &&
+                        favWindow.matches(item.ageDays(now))
                 }
             }
         } catch (t: Throwable) {
             android.util.Log.e("GalleryVM", "Favourites filter failed window=$favWindow", t)
             emptyList()
         }
+
+        val recentWindow = inputs.recentWindow
         val recent = try {
-            liveKeys.mapNotNull { mediaMap[it] }
+            playable
                 .filter { item ->
-                    passType(item, safeSettings) &&
-                        passFavType(item, safeSettings.recentTypes) &&
-                        recentWindow.matches(item.ageDays())
+                    passFavType(item, inputs.recentTypes) && recentWindow.matches(item.ageDays(now))
                 }
-                .sortedBy { it.ageDays() }
+                .sortedByDescending { it.recencyMs }
         } catch (t: Throwable) {
             android.util.Log.e("GalleryVM", "Recent filter failed window=$recentWindow", t)
             emptyList()
         }
-        val videos = allMedia.filter {
-            (it.mediaType == MediaType.VIDEO || it.mediaType == MediaType.AUDIO) && passType(it, safeSettings)
+
+        val videos = playable.filter {
+            it.mediaType == MediaType.VIDEO || it.mediaType == MediaType.AUDIO
         }
-        val selectedNormalized = MediaRepository.mediaStoreFolderKeys(safeSettings.selectedFolders)
-        val albums = discovered.filter {
+
+        val selectedNormalized = MediaRepository.mediaStoreFolderKeys(inputs.selectedFolders)
+        val albums = sources.discovered.filter {
             MediaRepository.folderMatchesSelection(it.path, selectedNormalized)
         }
-        val albumDetail = if (albumOpen != null) {
-            val albumNorm = setOf(MediaRepository.normalizeFolderPath(albumOpen))
-            gallery.filter { MediaRepository.folderMatchesSelection(it.folderPath, albumNorm) }
-        } else emptyList()
+        val albumDetail = if (sample.albumOpen != null) {
+            val albumNorm = setOf(MediaRepository.normalizeFolderPath(sample.albumOpen))
+            playable.filter { MediaRepository.folderMatchesSelection(it.folderPath, albumNorm) }
+        } else {
+            emptyList()
+        }
 
-        val noFolders = MediaRepository.mediaStoreFolderKeys(safeSettings.selectedFolders).isEmpty() &&
-            safeSettings.safTreeUris.isEmpty()
-
-        val viewerLive = viewerList.filter { it !in deleted }
-        val viewerItem = viewerLive.getOrNull(viewerIndex)?.let { lookup[it] }
-
-        val visibleTabs = safeSettings.tabOrder.filter { t -> t !in safeSettings.tabHidden }
-
-        return GalleryUiState(
-            settings = safeSettings,
-            currentTab = tab,
-            visibleTabs = visibleTabs,
+        return LibraryState(
             gallery = gallery,
             favourites = favourites,
             recent = recent,
             videos = videos,
             albums = albums,
-            discoveredFolders = discovered,
             albumDetail = albumDetail,
-            albumOpen = albumOpen,
-            noFolders = noFolders,
-            loading = loading,
-            viewerOpen = viewerOpen,
-            viewerItem = viewerItem,
-            viewerIndex = viewerIndex,
-            viewerCount = viewerLive.size,
-            viewerPlaying = viewerPlaying,
-            viewerChrome = viewerChrome,
-            viewerMenuOpen = viewerMenuOpen,
-            viewerSlideshowMode = viewerSlideshowMode,
-            viewerMuted = viewerMuted,
-            viewerChromeNonce = viewerChromeNonce,
-            speedMenuOpen = speedMenuOpen,
-            detailsOpen = detailsOpen,
-            customSpeedOpen = customSpeedOpen,
-            customSpeedSeconds = customSpeedSeconds,
-            selectMode = selectMode,
-            selectedKeys = selectedKeys,
-            confirmDeleteKeys = confirmDelete,
-            confirmResetSettings = confirmReset,
-            hiddenFoldersDialog = hiddenDialog,
-            favTypeMenuOpen = favTypeMenu,
-            recentTypeMenuOpen = recentTypeMenu,
-            collapsedGroups = collapsed,
-            multiVideo = multiVideo,
-            snack = snack,
-            mediaByKey = lookup,
+            albumOpen = sample.albumOpen,
+            discoveredFolders = sources.discovered,
+            lookup = lookup,
+            playableCount = playable.size,
+            noFolders = selectedNormalized.isEmpty() && inputs.safTreeUris.isEmpty(),
         )
     }
+
+    private fun assembleUiState(
+        settings: AppSettings,
+        library: LibraryState,
+        viewer: ViewerUi,
+        shell: ShellUi,
+        transient: TransientUi,
+    ): GalleryUiState = GalleryUiState(
+        settings = settings,
+        currentTab = shell.tab,
+        visibleTabs = settings.tabOrder.filter { it !in settings.tabHidden },
+        gallery = library.gallery,
+        favourites = library.favourites,
+        recent = library.recent,
+        videos = library.videos,
+        albums = library.albums,
+        discoveredFolders = library.discoveredFolders,
+        albumDetail = library.albumDetail,
+        albumOpen = library.albumOpen,
+        noFolders = library.noFolders,
+        loading = transient.loading,
+        countsRefreshing = transient.countsRefreshing,
+        galleryTotal = library.playableCount,
+        viewerOpen = viewer.open,
+        viewerItem = viewer.currentKey()?.let { library.lookup[it] },
+        viewerPrefetch = viewer.neighbourKeys().mapNotNull { library.lookup[it] },
+        viewerIndex = viewer.index,
+        viewerCount = viewer.keys.size,
+        viewerPlaying = viewer.playing,
+        viewerChrome = viewer.chrome,
+        viewerMenuOpen = viewer.menuOpen,
+        viewerSlideshowMode = viewer.slideshowMode,
+        viewerMuted = viewer.muted,
+        viewerChromeNonce = viewer.chromeNonce,
+        speedMenuOpen = viewer.speedMenuOpen,
+        detailsOpen = viewer.detailsOpen,
+        customSpeedOpen = viewer.customSpeedOpen,
+        customSpeedSeconds = viewer.customSpeedSeconds,
+        selectMode = shell.selectMode,
+        selectedKeys = shell.selectedKeys,
+        confirmDeleteKeys = shell.confirmDeleteKeys,
+        confirmResetSettings = shell.confirmResetSettings,
+        hiddenFoldersDialog = shell.hiddenFoldersDialog,
+        favTypeMenuOpen = shell.favTypeMenuOpen,
+        recentTypeMenuOpen = shell.recentTypeMenuOpen,
+        collapsedGroups = shell.collapsedGroups,
+        multiVideo = transient.multiVideo,
+        snack = transient.snack,
+        mediaByKey = library.lookup,
+    )
+
+    private fun AppSettings.toLibraryInputs() = LibraryInputs(
+        fileTypes = fileTypes,
+        favIds = favIds,
+        favWindow = favWindow,
+        favTypes = favTypes,
+        recentWindow = recentWindow,
+        recentTypes = recentTypes,
+        copyFavs = copyFavs,
+        copyFavTreeUri = copyFavTreeUri,
+        selectedFolders = selectedFolders,
+        safTreeUris = safTreeUris,
+    )
 
     override fun onCleared() {
         slideshowJob?.cancel()
         snackJob?.cancel()
         mvOverlayJob?.cancel()
         refreshJob?.cancel()
+        countsJob?.cancel()
+        persistShuffleJob?.cancel()
         super.onCleared()
+    }
+
+    /** The slice of [AppSettings] that actually changes the media lists. */
+    private data class LibraryInputs(
+        val fileTypes: Map<String, Boolean> = emptyMap(),
+        val favIds: Set<String> = emptySet(),
+        val favWindow: FavWindow = FavWindow.ALL,
+        val favTypes: FileTypeFilter = FileTypeFilter(),
+        val recentWindow: FavWindow = FavWindow.Days(30),
+        val recentTypes: FileTypeFilter = FileTypeFilter(),
+        val copyFavs: Boolean = false,
+        val copyFavTreeUri: String = "",
+        val selectedFolders: Set<String> = emptySet(),
+        val safTreeUris: Set<String> = emptySet(),
+    )
+
+    private data class LibrarySources(
+        val media: List<MediaItem>,
+        val folderFavourites: List<MediaItem>,
+        val deleted: Set<String>,
+        val discovered: List<MediaRepository.FolderInfo>,
+    )
+
+    private data class SampleInputs(
+        val seed: Long,
+        val limit: Int,
+        val albumOpen: String?,
+    )
+
+    private data class LibraryState(
+        val gallery: List<MediaItem> = emptyList(),
+        val favourites: List<MediaItem> = emptyList(),
+        val recent: List<MediaItem> = emptyList(),
+        val videos: List<MediaItem> = emptyList(),
+        val albums: List<MediaRepository.FolderInfo> = emptyList(),
+        val albumDetail: List<MediaItem> = emptyList(),
+        val albumOpen: String? = null,
+        val discoveredFolders: List<MediaRepository.FolderInfo> = emptyList(),
+        val lookup: Map<String, MediaItem> = emptyMap(),
+        val playableCount: Int = 0,
+        val noFolders: Boolean = true,
+    )
+
+    private data class ViewerUi(
+        val open: Boolean = false,
+        val keys: List<String> = emptyList(),
+        val index: Int = 0,
+        val playing: Boolean = false,
+        val chrome: Boolean = true,
+        val menuOpen: Boolean = false,
+        val speedMenuOpen: Boolean = false,
+        val detailsOpen: Boolean = false,
+        val customSpeedOpen: Boolean = false,
+        val customSpeedSeconds: Int = 8,
+        val slideshowMode: Boolean = false,
+        val muted: Boolean = false,
+        val chromeNonce: Int = 0,
+        val returnTab: AppTab = AppTab.GALLERY,
+        /** Gallery lists grow as the sample widens; other tabs are already complete. */
+        val fromGallery: Boolean = false,
+    ) {
+        fun currentKey(): String? = keys.getOrNull(index)
+
+        /** Keys either side of the current one, wrapping like [viewerNavigate] does. */
+        fun neighbourKeys(): List<String> {
+            if (!open || keys.size < 2) return emptyList()
+            val next = if (index + 1 > keys.lastIndex) 0 else index + 1
+            val prev = if (index - 1 < 0) keys.lastIndex else index - 1
+            return listOf(keys[next], keys[prev]).distinct()
+        }
+    }
+
+    private data class ShellUi(
+        val tab: AppTab = AppTab.GALLERY,
+        val selectMode: Boolean = false,
+        val selectedKeys: Set<String> = emptySet(),
+        val confirmDeleteKeys: List<String>? = null,
+        val confirmResetSettings: Boolean = false,
+        val hiddenFoldersDialog: Boolean = false,
+        val favTypeMenuOpen: Boolean = false,
+        val recentTypeMenuOpen: Boolean = false,
+        val collapsedGroups: Set<String> = emptySet(),
+    )
+
+    private data class TransientUi(
+        val multiVideo: MultiVideoState = MultiVideoState(),
+        val snack: SnackMessage? = null,
+        val loading: Boolean = false,
+        val countsRefreshing: Boolean = false,
+    )
+
+    private companion object {
+        const val MAX_SHUFFLE_HISTORY = 40
     }
 }
 
@@ -1435,8 +1528,14 @@ data class GalleryUiState(
     val albumOpen: String? = null,
     val noFolders: Boolean = true,
     val loading: Boolean = false,
+    /** True while the Settings file-type tally is being recomputed in the background. */
+    val countsRefreshing: Boolean = false,
+    /** Everything that passes the current filters, of which [gallery] is a random slice. */
+    val galleryTotal: Int = 0,
     val viewerOpen: Boolean = false,
     val viewerItem: MediaItem? = null,
+    /** Neighbouring items the viewer should decode ahead of a swipe. */
+    val viewerPrefetch: List<MediaItem> = emptyList(),
     val viewerIndex: Int = 0,
     val viewerCount: Int = 0,
     val viewerPlaying: Boolean = false,

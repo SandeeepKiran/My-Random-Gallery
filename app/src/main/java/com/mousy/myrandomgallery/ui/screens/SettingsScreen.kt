@@ -26,12 +26,14 @@ import androidx.compose.material.icons.filled.FileDownload
 import androidx.compose.material.icons.filled.FolderCopy
 import androidx.compose.material.icons.filled.FolderSpecial
 import androidx.compose.material.icons.filled.IosShare
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.filled.Swipe
 import androidx.compose.material.icons.filled.TouchApp
 import androidx.compose.material.icons.filled.ZoomIn
 import androidx.compose.material3.Checkbox
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -52,6 +54,8 @@ import com.mousy.myrandomgallery.data.model.AppSettings
 import com.mousy.myrandomgallery.data.model.AppTab
 import com.mousy.myrandomgallery.data.model.SlideshowSpeeds
 import com.mousy.myrandomgallery.data.model.ThemeMode
+import java.text.DateFormat
+import java.util.Date
 
 @Composable
 fun SettingsScreen(
@@ -79,6 +83,8 @@ fun SettingsScreen(
     onResetSettings: () -> Unit,
     onShareLogs: () -> Unit,
     appVersion: String,
+    countsRefreshing: Boolean = false,
+    onRefreshFileTypeCounts: () -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
     val scroll = rememberScrollState()
@@ -217,6 +223,14 @@ fun SettingsScreen(
 
         SectionTitle("File Types")
         SettingsGroup {
+            // Counting every file is a full-library walk, so it runs on demand and the list
+            // shows the numbers from the previous scan in the meantime.
+            FileTypeCountHeader(
+                scannedAtMs = settings.fileTypeCountsScannedAtMs,
+                refreshing = countsRefreshing,
+                onRefresh = onRefreshFileTypeCounts,
+            )
+            HorizontalDivider()
             // Always show discovered extensions from scan; never fall back to a hardcoded preset
             // when discoveries exist. Empty only when nothing has been scanned yet.
             val discovered = settings.discoveredFileTypeCounts
@@ -399,6 +413,46 @@ fun SettingsScreen(
         )
     }
 }
+
+@Composable
+private fun FileTypeCountHeader(
+    scannedAtMs: Long,
+    refreshing: Boolean,
+    onRefresh: () -> Unit,
+) {
+    val subtitle = when {
+        refreshing -> "Counting files…"
+        scannedAtMs <= 0L -> "Not counted yet"
+        else -> "Based on last scan · ${formatScanTime(scannedAtMs)}"
+    }
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .clickable(enabled = !refreshing, onClick = onRefresh)
+            .padding(16.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Column(modifier = Modifier.weight(1f)) {
+            Text("Refresh counts")
+            Text(
+                subtitle,
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        if (refreshing) {
+            CircularProgressIndicator(
+                strokeWidth = 2.dp,
+                modifier = Modifier.size(20.dp),
+            )
+        } else {
+            Icon(Icons.Default.Refresh, contentDescription = "Refresh counts", tint = MaterialTheme.colorScheme.primary)
+        }
+    }
+}
+
+private fun formatScanTime(ms: Long): String =
+    DateFormat.getDateTimeInstance(DateFormat.MEDIUM, DateFormat.SHORT).format(Date(ms))
 
 @Composable
 private fun SectionTitle(text: String) {

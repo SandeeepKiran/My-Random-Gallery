@@ -70,7 +70,9 @@ enum class AccentColor(val key: String, val label: String, val pastelHex: Long) 
     SAND("sand", "Sand", 0xFFECD79A);
 
     companion object {
-        fun fromKey(key: String): AccentColor = entries.find { it.key == key } ?: ROSE
+        val DEFAULT: AccentColor = SAND
+
+        fun fromKey(key: String): AccentColor = entries.find { it.key == key } ?: DEFAULT
     }
 }
 
@@ -116,7 +118,7 @@ data class SnackMessage(
 data class AppSettings(
     val themeMode: ThemeMode = ThemeMode.DARK,
     val amoled: Boolean = false,
-    val accent: AccentColor = AccentColor.ROSE,
+    val accent: AccentColor = AccentColor.DEFAULT,
     val columns: Int = 3,
     val gridMode: GridMode = GridMode.SWIPE,
     val selectedFolders: Set<String> = emptySet(),
@@ -124,6 +126,8 @@ data class AppSettings(
     val fileTypes: Map<String, Boolean> = emptyMap(),
     /** Extension - count of files seen in last scan (for Settings UI). */
     val discoveredFileTypeCounts: Map<String, Int> = emptyMap(),
+    /** Wall-clock time of the scan that produced [discoveredFileTypeCounts]; 0 = never. */
+    val fileTypeCountsScannedAtMs: Long = 0L,
     val favIds: Set<String> = emptySet(),
     val dontLoop: Boolean = false,
     val disableSwipeDelete: Boolean = true,
@@ -153,9 +157,18 @@ data class AppSettings(
     val recentWindow: FavWindow = FavWindow.Days(30),
     /** Recents media-type filter (independent of Favourites). */
     val recentTypes: FileTypeFilter = FileTypeFilter(),
-    /** Persisted gallery shuffle pages (pipe-separated keys; pages joined by `;`). */
-    val shuffleHistoryEncoded: String = "",
-    val shuffleHistoryIndex: Int = 0,
+    /**
+     * Gallery shuffle history as *seeds* rather than key lists. One Long regenerates the
+     * exact same random order, so swipe-back history costs 40 numbers instead of a
+     * 400k-entry string blob.
+     */
+    val shuffleSeeds: List<Long> = emptyList(),
+    val shuffleSeedIndex: Int = 0,
+    /**
+     * Exponential moving average of how many items get viewed per session. Drives how big
+     * a random slice of the library the gallery prepares up front.
+     */
+    val avgViewedPerSession: Float = SamplingDefaults.INITIAL_AVG_VIEWED,
 ) {
     /** Effective “delete disabled” - either dedicated or legacy toggle. */
     val deletesDisabled: Boolean get() = disableDeleteOptions || disableEditDelete

@@ -42,6 +42,9 @@ fun GalleryScreen(
     onPinchColumns: (Float) -> Unit,
     thumbnailPadding: Boolean = true,
     hapticsEnabled: Boolean = true,
+    /** Everything matching the current filters; [items] may be a random subset of it. */
+    totalCount: Int = items.size,
+    onReachedEnd: (Int) -> Unit = {},
     onGoSettings: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -92,13 +95,20 @@ fun GalleryScreen(
                     onPinchColumns = onPinchColumns,
                     thumbnailPadding = thumbnailPadding,
                     hapticsEnabled = hapticsEnabled,
+                    onReachedEnd = onReachedEnd,
                     modifier = Modifier.weight(1f),
                 )
+                val hint = if (gridMode == GridMode.SWIPE) {
+                    "Swipe left / right for a new random set · pinch to change columns"
+                } else {
+                    "Scroll for more · pinch to change columns"
+                }
                 Text(
-                    text = if (gridMode == GridMode.SWIPE) {
-                        "Swipe left / right for a new random set · pinch to change columns"
+                    // Say so when the grid is a random slice, so the count isn't confusing.
+                    text = if (totalCount > items.size) {
+                        "$hint · random ${items.size} of $totalCount"
                     } else {
-                        "Scroll for more · pinch to change columns"
+                        hint
                     },
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,

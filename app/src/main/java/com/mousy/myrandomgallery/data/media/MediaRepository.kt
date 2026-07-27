@@ -3,12 +3,14 @@ package com.mousy.myrandomgallery.data.media
 import android.content.ContentUris
 import android.content.Context
 import android.net.Uri
+import android.provider.DocumentsContract
 import android.provider.MediaStore
-import androidx.documentfile.provider.DocumentFile
 import com.mousy.myrandomgallery.data.model.MediaItem
 import com.mousy.myrandomgallery.data.model.MediaType
 import com.mousy.myrandomgallery.data.model.SlideshowSpeeds
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
 import java.util.Locale
 
@@ -52,17 +54,26 @@ class MediaRepository(private val context: Context) {
         else scanSafTrees(setOf(treeUri), fileTypeFilters)
     }
 
+    /**
+     * Folder list for the Settings picker. Counts rows straight off the cursor instead of
+     * materialising a [MediaItem] per file — this walks the entire device library, so
+     * building objects here was the single most expensive thing the app did at startup.
+     */
     suspend fun discoverFolders(
         hiddenFolders: Map<String, Boolean>,
     ): List<FolderInfo> = withContext(Dispatchers.IO) {
-        val all = queryMediaStore(emptySet(), hiddenFolders, emptyMap(), discoverOnly = true, includeUnsupported = true)
-        all.groupBy { it.folderPath }
-            .map { (path, items) ->
+        val counts = HashMap<String, Int>()
+        for (collection in mediaCollections) {
+            currentCoroutineContext().ensureActive()
+            countFolderRows(collection, hiddenFolders, counts)
+        }
+        counts.entries
+            .map { (path, count) ->
                 FolderInfo(
                     path = path,
                     displayName = path.substringAfterLast('/').ifBlank { path },
                     group = folderGroup(path),
-                    mediaCount = items.size,
+                    mediaCount = count,
                 )
             }
             .sortedBy { it.path }
@@ -84,26 +95,25 @@ class MediaRepository(private val context: Context) {
         safTreeUris: Set<String>,
         hiddenFolders: Map<String, Boolean>,
     ): Map<String, Int> = withContext(Dispatchers.IO) {
-        val items = mutableListOf<MediaItem>()
+        val counts = HashMap<String, Int>()
         val storeFolders = mediaStoreFolderKeys(selectedFolders)
         if (storeFolders.isNotEmpty()) {
-            items += queryMediaStore(
-                storeFolders, hiddenFolders, emptyMap(),
-                discoverOnly = false,
-                includeUnsupported = true,
-            )
+            for (collection in mediaCollections) {
+                currentCoroutineContext().ensureActive()
+                countExtensionRows(collection, storeFolders, hiddenFolders, counts)
+            }
         }
-        if (safTreeUris.isNotEmpty()) {
-            items += scanSafTrees(safTreeUris, emptyMap())
+        for (treeUri in safTreeUris) {
+            currentCoroutineContext().ensureActive()
+            walkSafTree(treeUri) { entry ->
+                val ext = entry.name.substringAfterLast('.', "").lowercase(Locale.US)
+                if (ext.isNotBlank()) counts[ext] = (counts[ext] ?: 0) + 1
+            }
         }
-        items
-            .map { it.extension.lowercase(Locale.US) }
-            .filter { it.isNotBlank() }
-            .groupingBy { it }
-            .eachCount()
+        counts
     }
 
-    private fun queryMediaStore(
+    private suspend fun queryMediaStore(
         selectedFolders: Set<String>,
         hiddenFolders: Map<String, Boolean>,
         fileTypeFilters: Map<String, Boolean>,
@@ -111,34 +121,20 @@ class MediaRepository(private val context: Context) {
         includeUnsupported: Boolean = false,
     ): List<MediaItem> {
         val result = mutableListOf<MediaItem>()
-        result += queryCollection(
-            MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
-            selectedFolders,
-            hiddenFolders,
-            fileTypeFilters,
-            discoverOnly,
-            includeUnsupported,
-        )
-        result += queryCollection(
-            MediaStore.Video.Media.EXTERNAL_CONTENT_URI,
-            selectedFolders,
-            hiddenFolders,
-            fileTypeFilters,
-            discoverOnly,
-            includeUnsupported,
-        )
-        result += queryCollection(
-            MediaStore.Audio.Media.EXTERNAL_CONTENT_URI,
-            selectedFolders,
-            hiddenFolders,
-            fileTypeFilters,
-            discoverOnly,
-            includeUnsupported,
-        )
+        for (collection in mediaCollections) {
+            result += queryCollection(
+                collection,
+                selectedFolders,
+                hiddenFolders,
+                fileTypeFilters,
+                discoverOnly,
+                includeUnsupported,
+            )
+        }
         return result
     }
 
-    private fun queryCollection(
+    private suspend fun queryCollection(
         collection: Uri,
         selectedFolders: Set<String>,
         hiddenFolders: Map<String, Boolean>,
@@ -161,6 +157,7 @@ class MediaRepository(private val context: Context) {
         )
 
         val normalizedSelected = selectedFolders.map { normalizeFolderPath(it) }.toSet()
+        val hidden = hiddenSegments(hiddenFolders)
         val items = mutableListOf<MediaItem>()
         context.contentResolver.query(
             collection,
@@ -181,7 +178,9 @@ class MediaRepository(private val context: Context) {
             val heightCol = cursor.getColumnIndexOrThrow(MediaStore.MediaColumns.HEIGHT)
             val durCol = cursor.getColumnIndexOrThrow(MediaStore.MediaColumns.DURATION)
 
+            var row = 0
             while (cursor.moveToNext()) {
+                if (++row % CANCEL_CHECK_ROWS == 0) currentCoroutineContext().ensureActive()
                 val id = cursor.getLong(idCol)
                 val displayName = cursor.getString(nameCol) ?: continue
                 val mime = cursor.getString(mimeCol) ?: "application/octet-stream"
@@ -190,7 +189,7 @@ class MediaRepository(private val context: Context) {
                     normalizeFolderPath(inferRelativePath(dataPath))
                 }
                 if (relativePath.isBlank()) continue
-                if (isHiddenPath(relativePath, hiddenFolders)) continue
+                if (isHiddenPath(relativePath, hidden)) continue
 
                 if (!discoverOnly) {
                     if (normalizedSelected.isEmpty()) continue
@@ -229,33 +228,85 @@ class MediaRepository(private val context: Context) {
         return items
     }
 
+    /** Two-column cursor over one collection, tallying rows per folder. */
+    private suspend fun countFolderRows(
+        collection: Uri,
+        hiddenFolders: Map<String, Boolean>,
+        into: MutableMap<String, Int>,
+    ) {
+        val projection = arrayOf(
+            MediaStore.MediaColumns.RELATIVE_PATH,
+            MediaStore.MediaColumns.DATA,
+        )
+        val hidden = hiddenSegments(hiddenFolders)
+        context.contentResolver.query(collection, projection, null, null, null)?.use { cursor ->
+            val relCol = cursor.getColumnIndexOrThrow(MediaStore.MediaColumns.RELATIVE_PATH)
+            val dataCol = cursor.getColumnIndexOrThrow(MediaStore.MediaColumns.DATA)
+            var row = 0
+            while (cursor.moveToNext()) {
+                if (++row % CANCEL_CHECK_ROWS == 0) currentCoroutineContext().ensureActive()
+                val path = folderPathOf(cursor.getString(relCol), cursor.getString(dataCol))
+                if (path.isBlank() || isHiddenPath(path, hidden)) continue
+                into[path] = (into[path] ?: 0) + 1
+            }
+        }
+    }
+
+    /** Two-column cursor over one collection, tallying rows per file extension. */
+    private suspend fun countExtensionRows(
+        collection: Uri,
+        selectedNormalized: Set<String>,
+        hiddenFolders: Map<String, Boolean>,
+        into: MutableMap<String, Int>,
+    ) {
+        val projection = arrayOf(
+            MediaStore.MediaColumns.DISPLAY_NAME,
+            MediaStore.MediaColumns.RELATIVE_PATH,
+            MediaStore.MediaColumns.DATA,
+        )
+        val hidden = hiddenSegments(hiddenFolders)
+        context.contentResolver.query(collection, projection, null, null, null)?.use { cursor ->
+            val nameCol = cursor.getColumnIndexOrThrow(MediaStore.MediaColumns.DISPLAY_NAME)
+            val relCol = cursor.getColumnIndexOrThrow(MediaStore.MediaColumns.RELATIVE_PATH)
+            val dataCol = cursor.getColumnIndexOrThrow(MediaStore.MediaColumns.DATA)
+            var row = 0
+            while (cursor.moveToNext()) {
+                if (++row % CANCEL_CHECK_ROWS == 0) currentCoroutineContext().ensureActive()
+                val path = folderPathOf(cursor.getString(relCol), cursor.getString(dataCol))
+                if (path.isBlank() || isHiddenPath(path, hidden)) continue
+                if (!folderMatchesSelection(path, selectedNormalized)) continue
+                val name = cursor.getString(nameCol) ?: continue
+                val ext = name.substringAfterLast('.', "").lowercase(Locale.US)
+                if (ext.isBlank()) continue
+                into[ext] = (into[ext] ?: 0) + 1
+            }
+        }
+    }
+
     /** DEVICE-ONLY: Walk SAF document trees the user granted via OpenDocumentTree. */
-    private fun scanSafTrees(
+    private suspend fun scanSafTrees(
         treeUris: Set<String>,
         fileTypeFilters: Map<String, Boolean>,
     ): List<MediaItem> {
         val items = mutableListOf<MediaItem>()
         var syntheticId = -1L
         for (treeUriStr in treeUris) {
-            val treeUri = Uri.parse(treeUriStr)
-            val root = DocumentFile.fromTreeUri(context, treeUri) ?: continue
-            walkDocumentTree(root, root.name ?: "SAF", treeUriStr, fileTypeFilters) { doc, folderPath ->
-                val name = doc.name ?: return@walkDocumentTree
-                val ext = name.substringAfterLast('.', "").lowercase(Locale.US)
-                if (fileTypeFilters.isNotEmpty() && fileTypeFilters[ext] == false) return@walkDocumentTree
-                val mime = doc.type ?: guessMime(ext)
+            walkSafTree(treeUriStr) { entry ->
+                val ext = entry.name.substringAfterLast('.', "").lowercase(Locale.US)
+                if (fileTypeFilters.isNotEmpty() && fileTypeFilters[ext] == false) return@walkSafTree
+                val mime = entry.mimeType.ifBlank { guessMime(ext) }
                 syntheticId--
                 items += MediaItem(
                     id = syntheticId,
-                    uri = doc.uri,
-                    displayName = name,
+                    uri = entry.uri,
+                    displayName = entry.name,
                     mimeType = mime,
                     extension = ext,
                     mediaType = classifyMedia(mime, ext),
-                    folderPath = folderPath,
-                    dateTakenMs = doc.lastModified(),
-                    dateAddedMs = doc.lastModified(),
-                    sizeBytes = doc.length(),
+                    folderPath = entry.folderPath,
+                    dateTakenMs = entry.lastModified,
+                    dateAddedMs = entry.lastModified,
+                    sizeBytes = entry.size,
                     width = 0,
                     height = 0,
                     durationMs = 0L,
@@ -265,27 +316,107 @@ class MediaRepository(private val context: Context) {
         return items
     }
 
-    private fun walkDocumentTree(
-        node: DocumentFile,
-        folderPath: String,
-        treeUri: String,
-        fileTypeFilters: Map<String, Boolean>,
-        onFile: (DocumentFile, String) -> Unit,
-    ) {
-        for (child in node.listFiles()) {
-            if (child.isDirectory) {
-                walkDocumentTree(child, "$folderPath/${child.name}", treeUri, fileTypeFilters, onFile)
-            } else if (child.isFile) {
-                onFile(child, folderPath)
+    private data class SafEntry(
+        val uri: Uri,
+        val name: String,
+        val mimeType: String,
+        val size: Long,
+        val lastModified: Long,
+        val folderPath: String,
+    )
+
+    /**
+     * Iterative tree walk that reads every child's metadata from the directory cursor.
+     *
+     * `DocumentFile.listFiles()` looks cheap but each `name`/`type`/`length()` read fires
+     * its own ContentResolver query, so a 5k-file tree became ~20k IPC round trips. One
+     * cursor per directory carries all of it.
+     */
+    private suspend fun walkSafTree(treeUriStr: String, onFile: (SafEntry) -> Unit) {
+        val treeUri = runCatching { Uri.parse(treeUriStr) }.getOrNull() ?: return
+        val rootId = runCatching { DocumentsContract.getTreeDocumentId(treeUri) }.getOrNull() ?: return
+        val rootName = safDisplayName(treeUri, rootId) ?: treeUri.lastPathSegment ?: "SAF"
+
+        val projection = arrayOf(
+            DocumentsContract.Document.COLUMN_DOCUMENT_ID,
+            DocumentsContract.Document.COLUMN_DISPLAY_NAME,
+            DocumentsContract.Document.COLUMN_MIME_TYPE,
+            DocumentsContract.Document.COLUMN_SIZE,
+            DocumentsContract.Document.COLUMN_LAST_MODIFIED,
+        )
+
+        val pending = ArrayDeque<Pair<String, String>>()
+        pending.addLast(rootId to rootName)
+        var visited = 0
+        while (pending.isNotEmpty()) {
+            currentCoroutineContext().ensureActive()
+            if (++visited > MAX_SAF_DIRECTORIES) return
+            val (docId, folderPath) = pending.removeLast()
+            val childrenUri = runCatching {
+                DocumentsContract.buildChildDocumentsUriUsingTree(treeUri, docId)
+            }.getOrNull() ?: continue
+
+            runCatching {
+                context.contentResolver.query(childrenUri, projection, null, null, null)
+            }.getOrNull()?.use { cursor ->
+                val idCol = cursor.getColumnIndexOrThrow(DocumentsContract.Document.COLUMN_DOCUMENT_ID)
+                val nameCol = cursor.getColumnIndexOrThrow(DocumentsContract.Document.COLUMN_DISPLAY_NAME)
+                val mimeCol = cursor.getColumnIndexOrThrow(DocumentsContract.Document.COLUMN_MIME_TYPE)
+                val sizeCol = cursor.getColumnIndexOrThrow(DocumentsContract.Document.COLUMN_SIZE)
+                val modCol = cursor.getColumnIndexOrThrow(DocumentsContract.Document.COLUMN_LAST_MODIFIED)
+                var row = 0
+                while (cursor.moveToNext()) {
+                    if (++row % CANCEL_CHECK_ROWS == 0) currentCoroutineContext().ensureActive()
+                    val childId = cursor.getString(idCol) ?: continue
+                    val name = cursor.getString(nameCol) ?: continue
+                    val mime = cursor.getString(mimeCol).orEmpty()
+                    if (mime == DocumentsContract.Document.MIME_TYPE_DIR) {
+                        pending.addLast(childId to "$folderPath/$name")
+                    } else {
+                        onFile(
+                            SafEntry(
+                                uri = DocumentsContract.buildDocumentUriUsingTree(treeUri, childId),
+                                name = name,
+                                mimeType = mime,
+                                size = if (cursor.isNull(sizeCol)) 0L else cursor.getLong(sizeCol),
+                                lastModified = if (cursor.isNull(modCol)) 0L else cursor.getLong(modCol),
+                                folderPath = folderPath,
+                            ),
+                        )
+                    }
+                }
             }
         }
     }
 
-    private fun isHiddenPath(path: String, hiddenFolders: Map<String, Boolean>): Boolean {
+    private fun safDisplayName(treeUri: Uri, docId: String): String? = runCatching {
+        val docUri = DocumentsContract.buildDocumentUriUsingTree(treeUri, docId)
+        context.contentResolver.query(
+            docUri,
+            arrayOf(DocumentsContract.Document.COLUMN_DISPLAY_NAME),
+            null,
+            null,
+            null,
+        )?.use { c -> if (c.moveToFirst()) c.getString(0) else null }
+    }.getOrNull()
+
+    private fun folderPathOf(relativePath: String?, dataPath: String?): String {
+        val fromRelative = relativePath?.takeIf { it.isNotBlank() }?.let { normalizeFolderPath(it) }
+        if (!fromRelative.isNullOrBlank()) return fromRelative
+        val data = dataPath?.takeIf { it.isNotBlank() } ?: return ""
+        return normalizeFolderPath(inferRelativePath(data))
+    }
+
+    /** Pre-lowercased segments so the per-row check doesn't re-lowercase the settings map. */
+    private fun hiddenSegments(hiddenFolders: Map<String, Boolean>): List<String> =
+        hiddenFolders.entries
+            .filter { !it.value }
+            .map { it.key.lowercase(Locale.US) }
+
+    private fun isHiddenPath(path: String, hiddenSegments: List<String>): Boolean {
+        if (hiddenSegments.isEmpty()) return false
         val lower = path.lowercase(Locale.US)
-        return hiddenFolders.any { (segment, include) ->
-            !include && lower.contains(segment.lowercase(Locale.US))
-        }
+        return hiddenSegments.any { lower.contains(it) }
     }
 
     private fun inferRelativePath(dataPath: String): String {
@@ -324,9 +455,21 @@ class MediaRepository(private val context: Context) {
     }
 
     companion object {
+        private const val CANCEL_CHECK_ROWS = 512
+        private const val MAX_SAF_DIRECTORIES = 4_000
+
+        private val mediaCollections = listOf(
+            MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
+            MediaStore.Video.Media.EXTERNAL_CONTENT_URI,
+            MediaStore.Audio.Media.EXTERNAL_CONTENT_URI,
+        )
+
         private val knownRoots = setOf(
             "pictures", "dcim", "movies", "download", "downloads", "myfiles", "documents",
         )
+
+        /** Hoisted: [normalizeFolderPath] runs once per media row during a scan. */
+        private val duplicateSlashes = Regex("/+")
 
         /** Keys used for MediaStore folder checkboxes (exclude SAF synthetic keys). */
         fun mediaStoreFolderKeys(selectedFolders: Set<String>): Set<String> =
@@ -337,11 +480,12 @@ class MediaRepository(private val context: Context) {
                 .toSet()
 
         fun normalizeFolderPath(path: String): String =
-            path.trim().trim('/').replace('\\', '/').replace(Regex("/+"), "/")
+            path.trim().trim('/').replace('\\', '/').replace(duplicateSlashes, "/")
 
         fun folderMatchesSelection(folderPath: String, selectedNormalized: Set<String>): Boolean {
+            if (selectedNormalized.isEmpty()) return false
             val path = normalizeFolderPath(folderPath).lowercase(Locale.US)
-            if (path.isBlank() || selectedNormalized.isEmpty()) return false
+            if (path.isBlank()) return false
             return selectedNormalized.any { sel ->
                 val s = sel.lowercase(Locale.US)
                 path == s || path.startsWith("$s/")

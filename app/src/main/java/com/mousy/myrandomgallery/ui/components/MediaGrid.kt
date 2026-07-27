@@ -22,6 +22,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
+import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AudioFile
@@ -33,12 +34,14 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -74,6 +77,7 @@ import com.mousy.myrandomgallery.ui.theme.FavouriteHeart
 import com.mousy.myrandomgallery.util.GalleryHaptics
 import kotlin.math.abs
 import kotlin.math.roundToInt
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
 
@@ -96,17 +100,17 @@ fun MediaGrid(
     onPinchColumns: (Float) -> Unit,
     thumbnailPadding: Boolean = true,
     hapticsEnabled: Boolean = true,
+    onReachedEnd: (Int) -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
     val landscape = LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
     // Landscape: denser columns so more than ~one row is visible.
-    val cols = remember(columns, landscape) {
-        val base = columns.coerceIn(1, 6)
-        if (landscape) (base + 2).coerceIn(3, 8) else base
+    val cols = remember(columns, landscape) { ThumbSpec.effectiveColumns(columns, landscape) }
+    val density = LocalDensity.current
+    val thumbPx = remember(columns, landscape, density) {
+        ThumbSpec.gridBucket(columns, landscape, density)
     }
-    val thumbPx = with(LocalDensity.current) {
-        ((360.dp / cols.coerceIn(1, 8)).coerceIn(96.dp, 400.dp)).roundToPx()
-    }
+    val gridState = rememberLazyGridState()
     val scope = rememberCoroutineScope()
     val view = LocalView.current
     val swipeOffsetX = remember { Animatable(0f) }
@@ -122,7 +126,6 @@ fun MediaGrid(
         val hPad = if (thumbnailPadding) 12.dp else 0.dp
         val cellWidth = (maxWidth - hPad - hSpacing * (cols - 1).coerceAtLeast(0)) / cols
         val cellHeight = cellWidth // square cells
-        val density = LocalDensity.current
         val availableHeight = maxHeight
         val boundedHeight = availableHeight.value.isFinite() && availableHeight > 0.dp
 
@@ -155,7 +158,16 @@ fun MediaGrid(
                 ),
             contentAlignment = if (gridMode == GridMode.SWIPE) Alignment.Center else Alignment.TopCenter,
         ) {
+            if (gridMode == GridMode.SCROLL) {
+                LaunchedEffect(gridState, displayItems.size) {
+                    snapshotFlow { gridState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0 }
+                        .distinctUntilChanged()
+                        .collect { onReachedEnd(it) }
+                }
+            }
+
             LazyVerticalGrid(
+                state = gridState,
                 columns = GridCells.Fixed(cols),
                 userScrollEnabled = gridMode == GridMode.SCROLL,
                 modifier = Modifier
@@ -388,11 +400,12 @@ private fun MediaGridCell(
     val placeholderColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f)
     val placeholder = remember(placeholderColor) { ColorPainter(placeholderColor) }
     val request = remember(item.uri, item.stableKey, thumbPx, item.mediaType) {
+        val cacheKey = ThumbSpec.thumbKey(item.stableKey, thumbPx)
         ImageRequest.Builder(context)
             .data(item.uri)
             .size(Size(thumbPx, thumbPx))
-            .memoryCacheKey("${item.stableKey}_thumb_$thumbPx")
-            .diskCacheKey("${item.stableKey}_thumb_$thumbPx")
+            .memoryCacheKey(cacheKey)
+            .diskCacheKey(cacheKey)
             .memoryCachePolicy(CachePolicy.ENABLED)
             .diskCachePolicy(CachePolicy.ENABLED)
             .crossfade(true)

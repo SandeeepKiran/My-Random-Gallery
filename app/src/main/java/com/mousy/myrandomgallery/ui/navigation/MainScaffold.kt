@@ -96,11 +96,9 @@ fun MainScaffold(
                 },
                 modifier = Modifier.fillMaxSize(),
             ) {
-                Box(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .then(if (viewerOpen) Modifier else Modifier.statusBarsPadding()),
-                ) {
+                // Full-bleed on purpose: the status-bar inset is applied per screen inside
+                // [content] so that opening the viewer doesn't shift the screen behind it.
+                Box(modifier = Modifier.fillMaxSize()) {
                     content()
                 }
             }

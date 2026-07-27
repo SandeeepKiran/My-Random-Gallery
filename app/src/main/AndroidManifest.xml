@@ -24,9 +24,15 @@
         android:theme="@style/Theme.MyRandomGallery"
         android:enableOnBackInvokedCallback="true">
 
+        <!--
+            Handling rotation in-process keeps ExoPlayer alive across orientation changes so
+            videos keep playing instead of restarting. Compose re-reads the new configuration
+            on its own, so layouts still adapt.
+        -->
         <activity
             android:name=".MainActivity"
             android:exported="true"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden"
             android:theme="@style/Theme.MyRandomGallery"
             android:windowSoftInputMode="adjustResize"
             android:enableOnBackInvokedCallback="true">

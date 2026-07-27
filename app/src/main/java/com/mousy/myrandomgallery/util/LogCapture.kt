@@ -16,20 +16,37 @@ import java.util.Locale
  */
 object LogCapture {
     private const val MAX_LINES = 2_500
-    private const val FILE_NAME = "my_random_gallery_log.txt"
+    private const val FILE_PREFIX = "my_random_gallery_log_"
+    private const val KEEP_RECENT_LOGS = 5
 
     fun captureToCache(context: Context): Result<File> = runCatching {
-        val out = File(context.cacheDir, FILE_NAME)
-        val stamp = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US).format(Date())
+        val now = Date()
+        // Timestamped so successive shares are distinguishable instead of overwriting.
+        val fileStamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(now)
+        val readableStamp = SimpleDateFormat("yyyy-MM-dd HH:mm:ss z", Locale.US).format(now)
+        val out = File(context.cacheDir, "$FILE_PREFIX$fileStamp.txt")
         val header = buildString {
             appendLine("My Random Gallery diagnostics")
-            appendLine("Captured: $stamp")
+            appendLine("Captured: $readableStamp")
             appendLine("Package: ${context.packageName}")
+            appendLine("Device: ${android.os.Build.MANUFACTURER} ${android.os.Build.MODEL}")
+            appendLine("Android: ${android.os.Build.VERSION.RELEASE} (SDK ${android.os.Build.VERSION.SDK_INT})")
             appendLine("--- logcat (tail) ---")
         }
         val body = dumpLogcat()
         out.writeText(header + body)
+        prunePreviousLogs(context, keep = out)
         out
+    }
+
+    private fun prunePreviousLogs(context: Context, keep: File) {
+        runCatching {
+            context.cacheDir
+                .listFiles { f -> f.name.startsWith(FILE_PREFIX) && f != keep }
+                ?.sortedByDescending { it.lastModified() }
+                ?.drop(KEEP_RECENT_LOGS - 1)
+                ?.forEach { it.delete() }
+        }
     }
 
     fun shareIntent(context: Context, file: File): Intent {

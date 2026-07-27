@@ -25,15 +25,16 @@ Built with **Kotlin**, **Jetpack Compose**, and **Material 3**. Runs on **Androi
 4. [Build from source](#build-from-source)
 5. [First-run guide](#first-run-guide)
 6. [Architecture](#architecture)
-7. [Android 16 vs 11–15](#android-16-vs-1115)
-8. [Permissions & privacy](#permissions--privacy)
-9. [DEVICE-ONLY features](#device-only-features)
-10. [Design files](#design-files)
-11. [Project structure](#project-structure)
-12. [Troubleshooting](#troubleshooting)
-13. [Publishing to GitHub](#publishing-to-github)
-14. [Contributing](#contributing)
-15. [License & author](#license--author)
+7. [Performance on large libraries](#performance-on-large-libraries)
+8. [Android 16 vs 11–15](#android-16-vs-1115)
+9. [Permissions & privacy](#permissions--privacy)
+10. [DEVICE-ONLY features](#device-only-features)
+11. [Design files](#design-files)
+12. [Project structure](#project-structure)
+13. [Troubleshooting](#troubleshooting)
+14. [Publishing to GitHub](#publishing-to-github)
+15. [Contributing](#contributing)
+16. [License & author](#license--author)
 
 ---
 
@@ -55,7 +56,7 @@ Bottom nav uses **Material 3 Adaptive Navigation Suite** (`NavigationSuiteScaffo
 
 | Tab | Description | Default |
 |-----|-------------|---------|
-| **Gallery** | Random shuffled grid of selected media | Always on; app opens here |
+| **Gallery** | Random shuffled grid drawn from a seeded slice of your library | Always on; app opens here |
 | **Favourites** | Favourited items with type + time filters | On |
 | **Recent** | Recently added files (7–365 day windows) | On |
 | **Slideshow** | Opens fullscreen viewer / autoplay | On |
@@ -81,8 +82,9 @@ Default order: Favourites → Recent → Gallery → Slideshow → More. Tab ord
 
 - Light / dark mode
 - **AMOLED black** surfaces in dark mode
-- Six accent palettes: **Rose**, **Lavender**, **Mint**, **Peach**, **Sky**, **Sand**
+- Six accent palettes: **Sand** (default), **Rose**, **Lavender**, **Mint**, **Peach**, **Sky**
 - Material You **dynamic color** on Android 12+ (blended with accent)
+- Status- and navigation-bar icons follow the app theme, not the system one
 
 ### Playback & safety
 
@@ -91,11 +93,15 @@ Default order: Favourites → Recent → Gallery → Slideshow → More. Tab ord
 - Disable swipe-up-to-delete, or disable every delete action app-wide
 - Haptic feedback for confirmed actions and padded/edge-to-edge grid tiles
 - Viewer media controls are separate from slideshow playback; video and audio autoplay when opened
+- Fullscreen is genuinely fullscreen: the status and navigation bars hide while the viewer is open (swipe from an edge to reveal them)
+- Rotating the phone **keeps video playing** at the same position, in both the viewer and Multi-Video
+- Audio files show embedded album art in the viewer, with a music-note card when a track has none
 
 ### Storage & data
 
 - Source folders via **SAF** (Storage Access Framework) + MediaStore discovery
-- File-type filters detected from selected folders
+- File-type filters detected from selected folders, with cached per-extension counts and an
+  on-demand **Refresh counts** action (labelled with the time of the last scan)
 - Optional favourites folder sync (copy on favourite / remove copy on unfavourite)
 - Hidden folders dialog
 - Export / import settings
@@ -228,6 +234,13 @@ Output: `app\build\outputs\apk\release\app-release.apk`
 
 GitHub Actions workflow: [`.github/workflows/android.yml`](.github/workflows/android.yml) runs `assembleDebug` on push/PR.
 
+Release builds run **R8** (`isMinifyEnabled` + `isShrinkResources`), which takes the APK from
+roughly 70 MB debug to about 8 MB. Lint is clean:
+
+```powershell
+.\gradlew.bat :app:lintDebug
+```
+
 ---
 
 ## First-run guide
@@ -246,17 +259,29 @@ If the grid is empty: no folders selected, or no matching file types — adjust 
 ## Architecture
 
 ```text
-SettingsRepository (DataStore)
-        │
-        ▼
- GalleryViewModel  ←── MediaRepository (MediaStore + SAF)
-        │                 FavouritesExporter / FavouritesFolderSync
-        ▼
-   GalleryUiState
-        │
-        ▼
- Compose UI (icon-only tabs, grids, viewer, dialogs)
+SettingsRepository (DataStore)      MediaRepository (MediaStore + SAF)
+        │                                    │
+        └──────────────┬─────────────────────┘
+                       ▼
+              GalleryViewModel
+                       │
+        ┌──────────────┴───────────────┐
+        ▼                              ▼
+  libraryState                   viewer / shell / transient
+  (filters, sampling, sorting)   (tabs, chrome, menus, dialogs)
+  on Dispatchers.Default         cheap, main thread
+        └──────────────┬───────────────┘
+                       ▼
+                 GalleryUiState
+                       ▼
+   Compose UI (tabs, grids, viewer, dialogs)
 ```
+
+The ViewModel deliberately keeps its state in **two halves**. `libraryState` holds everything
+derived from the media library and only recomputes when the library, the filters, or the random
+draw change — off the main thread. The UI-toggle flows (viewer index, chrome, menus, selection,
+snackbars) are grouped into three small state objects that combine into `GalleryUiState` with
+nothing more than object construction. Tapping a button therefore never re-filters the library.
 
 | Layer | Responsibility |
 |-------|----------------|
@@ -279,6 +304,49 @@ Checked-in rules live in `app/src/main/baseline-prof.txt` (installed via Profile
 ```
 
 CI runs `assembleDebug` only and does not require an emulator for profile generation.
+
+---
+
+## Performance on large libraries
+
+The app is built to stay responsive with folders holding **5,000–10,000+ files**. Four ideas do
+most of the work.
+
+### 1. A seeded random slice, not the whole library
+
+It's a *random* gallery, and a typical session looks at a few hundred items — so the Gallery tab
+prepares a bounded random sample instead of the full set. The sample comes from a **single `Long`
+seed** via a partial Fisher–Yates shuffle: drawing 1,200 of 10,000 costs 1,200 swaps rather than
+shuffling everything.
+
+Because the order is reproducible from the seed, swipe-back history stores **40 numbers** instead
+of 40 pages of file keys, and "load more" can extend the same draw without ever repeating an item.
+Favourites, Recent, and Albums are never sampled — they're already bounded by their own filters.
+
+When a slice is active the Gallery footer says so, e.g. `random 1200 of 9847`.
+
+### 2. A sample size that learns your habits
+
+The app tracks a moving average of how many items you actually view per session (starting at 800),
+sizes the slice to **1.5×** that average clamped to `[300, total]`, and widens it when you reach
+~80% of what's loaded. A user who glances at 100 photos and one who scrolls through 3,000 both end
+up with a working set that fits how they use the app.
+
+### 3. Nothing heavy on the main thread
+
+List derivation runs on `Dispatchers.Default` and is decoupled from UI toggles (see
+[Architecture](#architecture)). Scans cooperate with cancellation, so changing folders mid-scan
+stops the old one instead of racing it.
+
+### 4. Cheap scans
+
+| Work | Approach |
+|------|----------|
+| Folder counts for Settings | Two-column cursor tallied into a map — no `MediaItem` per file |
+| Extension counts | Same, and moved off the gallery load path entirely |
+| SAF tree walk | One cursor per directory instead of a separate query per file attribute |
+| Viewer images | Decoded at 1.5× screen size (never `Size.ORIGINAL`), neighbours prefetched, grid thumbnail reused as an instant placeholder |
+| Item keys / timestamps | Precomputed once per item rather than rebuilt on every read |
 
 ---
 
@@ -379,6 +447,9 @@ My_Random_Gallery/
 | Problem | What to try |
 |---------|-------------|
 | Empty Gallery | Add at least one SAF folder in **More**; check **File Types** |
+| Gallery shows fewer items than my library | Intentional — the footer shows `random N of M`. Swipe for a new set, or scroll in list mode to load more |
+| File-type counts look stale | They're cached from the last scan; tap **Refresh counts** in **More → File Types** |
+| Accent is Rose, not Sand | Sand is the default for new installs; an existing install keeps its stored choice. Pick Sand, or use **Reset all settings** |
 | Permission denied | Re-open app → system settings → allow Photos/Videos; or rely on SAF folders |
 | Videos won’t play | Confirm codec support; try another file; check Multi-Video cell has a selection |
 | Gradle sync fails | Install SDK Platform 36 + Build-Tools; set `sdk.dir` in `local.properties` |

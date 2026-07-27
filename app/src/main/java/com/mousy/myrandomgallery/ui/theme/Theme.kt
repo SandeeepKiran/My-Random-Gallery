@@ -17,7 +17,7 @@ import com.mousy.myrandomgallery.data.model.ThemeMode
 fun MyRandomGalleryTheme(
     themeMode: ThemeMode = ThemeMode.DARK,
     amoled: Boolean = false,
-    accent: AccentColor = AccentColor.ROSE,
+    accent: AccentColor = AccentColor.DEFAULT,
     useDynamicColor: Boolean = true,
     content: @Composable () -> Unit,
 ) {

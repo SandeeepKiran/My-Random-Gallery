@@ -21,14 +21,22 @@ data class MediaItem(
     val height: Int,
     val durationMs: Long = 0L,
 ) {
-    val stableKey: String get() = "${id}_${uri}"
+    /**
+     * Computed once per item rather than per read: filtering a 10k library touches this
+     * key millions of times, and a `get()` would rebuild the string on every touch.
+     */
+    val stableKey: String = "${id}_${uri}"
+
+    /** Best-known timestamp, precomputed so sorting doesn't re-derive it per comparison. */
+    val recencyMs: Long = when {
+        dateAddedMs > 0L -> dateAddedMs
+        dateTakenMs > 0L -> dateTakenMs
+        else -> 0L
+    }
 
     fun ageDays(nowMs: Long = System.currentTimeMillis()): Int {
-        val ref = when {
-            dateAddedMs > 0L -> dateAddedMs
-            dateTakenMs > 0L -> dateTakenMs
-            else -> return Int.MAX_VALUE / 4 // unknown date → fail closed for day filters
-        }
+        // unknown date → fail closed for day filters
+        val ref = recencyMs.takeIf { it > 0L } ?: return Int.MAX_VALUE / 4
         val diffMs = (nowMs - ref).coerceAtLeast(0L)
         val days = diffMs / 86_400_000L
         // Guard against toInt() overflow on pathological timestamps

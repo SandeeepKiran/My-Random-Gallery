@@ -1,8 +1,6 @@
 package com.mousy.myrandomgallery.ui.components
 
 import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.core.Spring
-import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -10,6 +8,9 @@ import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.togetherWith
 import androidx.compose.animation.AnimatedContent
+import android.graphics.BitmapFactory
+import android.media.MediaMetadataRetriever
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.awaitEachGesture
@@ -17,7 +18,6 @@ import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.calculatePan
 import androidx.compose.foundation.gestures.calculateZoom
 import androidx.compose.foundation.gestures.detectTapGestures
-import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -29,8 +29,8 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.widthIn
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
@@ -39,6 +39,7 @@ import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.Fullscreen
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.filled.MusicNote
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Share
@@ -62,17 +63,23 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.positionChanged
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.LifecycleStartEffect
 import androidx.media3.common.MediaItem as ExoMediaItem
@@ -81,11 +88,16 @@ import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.ui.compose.ContentFrame
 import androidx.compose.ui.graphics.painter.ColorPainter
+import coil3.SingletonImageLoader
 import coil3.compose.AsyncImage
+import coil3.memory.MemoryCache
 import coil3.request.CachePolicy
 import coil3.request.ImageRequest
 import coil3.request.crossfade
+import coil3.size.Dimension
 import coil3.size.Size
+import coil3.video.preferVideoFrameEmbeddedThumbnailKey
+import coil3.video.videoFrameMillis
 import com.mousy.myrandomgallery.data.model.MediaItem
 import com.mousy.myrandomgallery.data.model.MediaType
 import com.mousy.myrandomgallery.data.model.SlideshowSpeeds
@@ -95,11 +107,21 @@ import java.util.Date
 import java.util.Locale
 import java.util.concurrent.TimeUnit
 import kotlin.math.abs
+import kotlin.math.roundToInt
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
+import kotlinx.coroutines.withContext
 
 private val MenuShape = RoundedCornerShape(20.dp)
 private const val CHROME_AUTO_HIDE_MS = 5_000L
+/** Snappy enough to feel instant, long enough to read as a swipe. */
+private const val PAGE_ANIM_MS = 150
+/**
+ * Decode headroom above the screen size. Full-resolution decodes of a 12MP photo were the
+ * cause of the black flash on swipe; 1.5x still leaves detail for pinch-zoom.
+ */
+private const val VIEWER_DECODE_SCALE = 1.5f
 
 /**
  * Fullscreen viewer. Top/bottom chrome is an overlay (fade only) so media stays full-bleed
@@ -138,15 +160,29 @@ fun FullscreenViewer(
     onVideoEnded: () -> Unit = {},
     onUserInteracted: () -> Unit = {},
     chromeAutoHideNonce: Int = 0,
+    prefetch: List<MediaItem> = emptyList(),
+    gridThumbBucketPx: Int = 256,
     modifier: Modifier = Modifier,
 ) {
     var navDirection by remember { mutableIntStateOf(0) }
+    val context = LocalContext.current
+    val decodeSize = rememberViewerDecodeSize()
 
     // Auto-hide chrome after inactivity while visible
     LaunchedEffect(chromeVisible, item?.stableKey, menuOpen, speedMenuOpen, chromeAutoHideNonce) {
         if (!chromeVisible || menuOpen || speedMenuOpen) return@LaunchedEffect
         delay(CHROME_AUTO_HIDE_MS)
         onToggleChrome()
+    }
+
+    // Warm the neighbours so a swipe lands on an already-decoded bitmap.
+    LaunchedEffect(item?.stableKey, decodeSize) {
+        if (prefetch.isEmpty()) return@LaunchedEffect
+        val loader = SingletonImageLoader.get(context)
+        prefetch.forEach { neighbour ->
+            if (neighbour.mediaType == MediaType.AUDIO) return@forEach
+            loader.enqueue(neighbour.viewerRequest(context, decodeSize, gridThumbBucketPx))
+        }
     }
 
     Box(
@@ -159,31 +195,18 @@ fun FullscreenViewer(
             targetState = item,
             transitionSpec = {
                 val dir = navDirection
-                val enterSpring = spring<Float>(
-                    dampingRatio = Spring.DampingRatioNoBouncy,
-                    stiffness = Spring.StiffnessMediumLow,
-                )
-                val exitSpring = spring<Float>(
-                    dampingRatio = Spring.DampingRatioNoBouncy,
-                    stiffness = Spring.StiffnessMedium,
-                )
+                val fade = tween<Float>(PAGE_ANIM_MS)
                 if (dir == 0) {
-                    fadeIn(enterSpring) togetherWith fadeOut(exitSpring)
+                    fadeIn(fade) togetherWith fadeOut(fade)
                 } else {
                     val enter = slideInHorizontally(
-                        animationSpec = spring(
-                            dampingRatio = Spring.DampingRatioNoBouncy,
-                            stiffness = Spring.StiffnessMediumLow,
-                        ),
+                        animationSpec = tween(PAGE_ANIM_MS),
                         initialOffsetX = { full -> if (dir > 0) full else -full },
-                    ) + fadeIn(enterSpring)
+                    ) + fadeIn(fade)
                     val exit = slideOutHorizontally(
-                        animationSpec = spring(
-                            dampingRatio = Spring.DampingRatioNoBouncy,
-                            stiffness = Spring.StiffnessMedium,
-                        ),
+                        animationSpec = tween(PAGE_ANIM_MS),
                         targetOffsetX = { full -> if (dir > 0) -full / 3 else full / 3 },
-                    ) + fadeOut(exitSpring)
+                    ) + fadeOut(fade)
                     enter togetherWith exit
                 }
             },
@@ -215,6 +238,8 @@ fun FullscreenViewer(
                 null -> Unit
                 else -> ZoomableImageSurface(
                     item = pageItem,
+                    decodeSize = decodeSize,
+                    gridThumbBucketPx = gridThumbBucketPx,
                     onToggleChrome = {
                         onUserInteracted()
                         onToggleChrome()
@@ -240,6 +265,8 @@ fun FullscreenViewer(
                 modifier = Modifier
                     .fillMaxWidth()
                     .background(Brush.verticalGradient(listOf(Color.Black.copy(0.62f), Color.Transparent)))
+                    // Zero while system bars are hidden; keeps chrome clear if they reappear.
+                    .statusBarsPadding()
                     .padding(horizontal = 4.dp, vertical = 10.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
@@ -366,9 +393,55 @@ fun FullscreenViewer(
     }
 }
 
+/** Screen-sized decode target, so the viewer never asks Coil for a full-resolution bitmap. */
+@Composable
+private fun rememberViewerDecodeSize(): Size {
+    val config = LocalConfiguration.current
+    val density = LocalDensity.current
+    return remember(config.screenWidthDp, config.screenHeightDp, density) {
+        with(density) {
+            val w = (config.screenWidthDp.dp.toPx() * VIEWER_DECODE_SCALE).roundToInt()
+            val h = (config.screenHeightDp.dp.toPx() * VIEWER_DECODE_SCALE).roundToInt()
+            Size(w.coerceAtLeast(1), h.coerceAtLeast(1))
+        }
+    }
+}
+
+/**
+ * Full-view request for an item. The grid's cached thumbnail is named as the placeholder so
+ * something appears on the very first frame instead of black while the large decode runs.
+ */
+private fun MediaItem.viewerRequest(
+    context: android.content.Context,
+    decodeSize: Size,
+    gridThumbBucketPx: Int,
+): ImageRequest {
+    val cacheKey = ThumbSpec.fullKey(stableKey, decodeSize.width.pxOrZero(), decodeSize.height.pxOrZero())
+    return ImageRequest.Builder(context)
+        .data(uri)
+        .size(decodeSize)
+        .memoryCacheKey(cacheKey)
+        .diskCacheKey(cacheKey)
+        .placeholderMemoryCacheKey(MemoryCache.Key(ThumbSpec.thumbKey(stableKey, gridThumbBucketPx)))
+        .memoryCachePolicy(CachePolicy.ENABLED)
+        .diskCachePolicy(CachePolicy.ENABLED)
+        .crossfade(true)
+        .apply {
+            if (mediaType == MediaType.VIDEO) {
+                videoFrameMillis(0)
+                preferVideoFrameEmbeddedThumbnailKey(true)
+            }
+        }
+        .build()
+}
+
+private fun Dimension.pxOrZero(): Int = (this as? Dimension.Pixels)?.px ?: 0
+
 @Composable
 private fun ZoomableImageSurface(
     item: MediaItem,
+    decodeSize: Size,
+    gridThumbBucketPx: Int,
     onToggleChrome: () -> Unit,
     onNavigate: (Int) -> Unit,
     onSwipeUpDelete: () -> Unit,
@@ -379,16 +452,8 @@ private fun ZoomableImageSurface(
     val context = LocalContext.current
 
     val placeholder = remember { ColorPainter(Color.Black) }
-    val imageModel = remember(item.uri, item.stableKey) {
-        ImageRequest.Builder(context)
-            .data(item.uri)
-            .size(Size.ORIGINAL)
-            .memoryCacheKey("${item.stableKey}_full")
-            .diskCacheKey("${item.stableKey}_full")
-            .memoryCachePolicy(CachePolicy.ENABLED)
-            .diskCachePolicy(CachePolicy.ENABLED)
-            .crossfade(true)
-            .build()
+    val imageModel = remember(item.uri, item.stableKey, decodeSize, gridThumbBucketPx) {
+        item.viewerRequest(context, decodeSize, gridThumbBucketPx)
     }
 
     Box(
@@ -488,7 +553,7 @@ private fun ZoomableImageSurface(
  * Video/audio with custom Material 3 control bar (mute, scrubber, play/pause, immersive).
  * Uses media3-ui-compose ContentFrame; chrome stays Compose overlay so layout stays stable.
  */
-@OptIn(UnstableApi::class)
+@androidx.annotation.OptIn(markerClass = [UnstableApi::class])
 @Composable
 private fun MediaPlayerSurface(
     item: MediaItem,
@@ -513,13 +578,19 @@ private fun MediaPlayerSurface(
     var scrubbing by remember { mutableStateOf(false) }
     var scrubValue by remember { mutableFloatStateOf(0f) }
 
+    // Survives process death / activity recreation so playback resumes where it left off
+    // rather than restarting. (Rotation itself is handled in-process via configChanges.)
+    var resumePositionMs by rememberSaveable(item.stableKey) { mutableStateOf(0L) }
+    var resumePlayWhenReady by rememberSaveable(item.stableKey) { mutableStateOf(true) }
+
     // minSdk 30: LifecycleStartEffect (onStart/onStop) is the recommended player gate.
     LifecycleStartEffect(item.uri, item.stableKey, loopVideos, slideshowMode) {
         val exo = ExoPlayer.Builder(context).build().apply {
             setMediaItem(ExoMediaItem.fromUri(item.uri))
             repeatMode = if (loopVideos) Player.REPEAT_MODE_ONE else Player.REPEAT_MODE_OFF
+            if (resumePositionMs > 0L) seekTo(resumePositionMs)
             prepare()
-            playWhenReady = true
+            playWhenReady = resumePlayWhenReady
         }
         val listener = object : Player.Listener {
             override fun onPlaybackStateChanged(playbackState: Int) {
@@ -531,6 +602,8 @@ private fun MediaPlayerSurface(
         exo.addListener(listener)
         player = exo
         onStopOrDispose {
+            resumePositionMs = exo.currentPosition.coerceAtLeast(0L)
+            resumePlayWhenReady = exo.playWhenReady
             exo.removeListener(listener)
             exo.release()
             if (player === exo) player = null
@@ -580,11 +653,16 @@ private fun MediaPlayerSurface(
                 }
             },
     ) {
-        ContentFrame(
-            player = player,
-            modifier = Modifier.fillMaxSize(),
-            contentScale = ContentScale.Fit,
-        )
+        if (item.mediaType == MediaType.AUDIO) {
+            // Audio has no video surface to draw, so the viewer was just black.
+            AudioArtwork(item = item, modifier = Modifier.fillMaxSize())
+        } else {
+            ContentFrame(
+                player = player,
+                modifier = Modifier.fillMaxSize(),
+                contentScale = ContentScale.Fit,
+            )
+        }
 
         // M3 tonal media control bar — overlay only
         AnimatedVisibility(
@@ -678,6 +756,100 @@ private fun MediaPlayerSurface(
             }
         }
     }
+}
+
+/**
+ * Cover art for audio items. Reads the embedded picture with [MediaMetadataRetriever] (Coil has
+ * no audio decoder) and falls back to a tinted note card when a track has no artwork.
+ */
+@Composable
+private fun AudioArtwork(item: MediaItem, modifier: Modifier = Modifier) {
+    val context = LocalContext.current
+    var art by remember(item.stableKey) { mutableStateOf<ImageBitmap?>(null) }
+
+    LaunchedEffect(item.stableKey) {
+        art = withContext(Dispatchers.IO) { loadEmbeddedArtwork(context, item.uri) }
+    }
+
+    val scheme = MaterialTheme.colorScheme
+    Box(
+        modifier = modifier.background(
+            Brush.verticalGradient(
+                listOf(
+                    scheme.surfaceContainerHigh.copy(alpha = 0.9f),
+                    Color.Black,
+                ),
+            ),
+        ),
+        contentAlignment = Alignment.Center,
+    ) {
+        val cover = art
+        Column(
+            horizontalAlignment = Alignment.CenterHorizontally,
+            modifier = Modifier.padding(32.dp),
+        ) {
+            Surface(
+                shape = RoundedCornerShape(24.dp),
+                color = scheme.surfaceContainerHighest,
+                tonalElevation = 6.dp,
+                modifier = Modifier.size(240.dp),
+            ) {
+                if (cover != null) {
+                    Image(
+                        bitmap = cover,
+                        contentDescription = item.displayName,
+                        contentScale = ContentScale.Crop,
+                        modifier = Modifier.fillMaxSize(),
+                    )
+                } else {
+                    Box(contentAlignment = Alignment.Center) {
+                        Icon(
+                            Icons.Default.MusicNote,
+                            contentDescription = item.displayName,
+                            tint = scheme.primary,
+                            modifier = Modifier.size(96.dp),
+                        )
+                    }
+                }
+            }
+            Text(
+                text = item.displayName,
+                color = Color.White,
+                style = MaterialTheme.typography.titleMedium,
+                textAlign = TextAlign.Center,
+                maxLines = 2,
+                modifier = Modifier.padding(top = 20.dp),
+            )
+        }
+    }
+}
+
+private fun loadEmbeddedArtwork(context: android.content.Context, uri: android.net.Uri): ImageBitmap? =
+    runCatching {
+        MediaMetadataRetriever().use { retriever ->
+            retriever.setDataSource(context, uri)
+            val bytes = retriever.embeddedPicture ?: return null
+            val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+            BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
+            val options = BitmapFactory.Options().apply {
+                inSampleSize = sampleSizeFor(bounds.outWidth, bounds.outHeight, MAX_ARTWORK_PX)
+            }
+            BitmapFactory.decodeByteArray(bytes, 0, bytes.size, options)?.asImageBitmap()
+        }
+    }.getOrNull()
+
+private const val MAX_ARTWORK_PX = 1_024
+
+private fun sampleSizeFor(width: Int, height: Int, target: Int): Int {
+    var sample = 1
+    var w = width
+    var h = height
+    while (w / 2 >= target && h / 2 >= target) {
+        w /= 2
+        h /= 2
+        sample *= 2
+    }
+    return sample
 }
 
 private fun formatMs(ms: Long): String {
