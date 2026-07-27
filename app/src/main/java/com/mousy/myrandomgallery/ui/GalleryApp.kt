@@ -121,7 +121,7 @@ fun GalleryApp(
     var pendingPickerIndex = remember { intArrayOf(-1) }
 
     val multiPickGallery = rememberLauncherForActivityResult(
-        ActivityResultContracts.GetContent(),
+        ActivityResultContracts.PickVisualMedia(),
     ) { uri ->
         val idx = pendingPickerIndex[0]
         if (uri == null || idx < 0) return@rememberLauncherForActivityResult
@@ -519,7 +519,11 @@ fun GalleryApp(
                 onSelect = { viewModel.assignMultiVideo(pickerIndex, it) },
                 onPickGallery = {
                     pendingPickerIndex[0] = pickerIndex
-                    multiPickGallery.launch("*/*")
+                    multiPickGallery.launch(
+                        androidx.activity.result.PickVisualMediaRequest(
+                            ActivityResultContracts.PickVisualMedia.VideoOnly,
+                        ),
+                    )
                 },
                 onPickFiles = {
                     pendingPickerIndex[0] = pickerIndex

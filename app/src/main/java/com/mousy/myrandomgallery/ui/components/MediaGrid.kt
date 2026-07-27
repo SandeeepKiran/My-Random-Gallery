@@ -65,6 +65,8 @@ import coil3.request.CachePolicy
 import coil3.request.ImageRequest
 import coil3.request.crossfade
 import coil3.size.Size
+import coil3.video.preferVideoFrameEmbeddedThumbnailKey
+import coil3.video.videoFrameMillis
 import com.mousy.myrandomgallery.data.model.GridMode
 import com.mousy.myrandomgallery.data.model.MediaItem
 import com.mousy.myrandomgallery.data.model.MediaType
@@ -385,7 +387,7 @@ private fun MediaGridCell(
     val touchSlop = LocalViewConfiguration.current.touchSlop
     val placeholderColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f)
     val placeholder = remember(placeholderColor) { ColorPainter(placeholderColor) }
-    val request = remember(item.uri, item.stableKey, thumbPx) {
+    val request = remember(item.uri, item.stableKey, thumbPx, item.mediaType) {
         ImageRequest.Builder(context)
             .data(item.uri)
             .size(Size(thumbPx, thumbPx))
@@ -394,6 +396,12 @@ private fun MediaGridCell(
             .memoryCachePolicy(CachePolicy.ENABLED)
             .diskCachePolicy(CachePolicy.ENABLED)
             .crossfade(true)
+            .apply {
+                if (item.mediaType == MediaType.VIDEO) {
+                    videoFrameMillis(0)
+                    preferVideoFrameEmbeddedThumbnailKey(true)
+                }
+            }
             .build()
     }
     // Pre-toggle look: 6dp corners, no extra per-cell padding (gap comes from grid spacing).

@@ -7,16 +7,20 @@ import coil3.SingletonImageLoader
 import coil3.disk.DiskCache
 import coil3.memory.MemoryCache
 import coil3.request.crossfade
+import coil3.video.VideoFrameDecoder
 import okio.Path.Companion.toOkioPath
 
 /**
- * Configures Coil memory + disk caches and default crossfade for the whole app.
+ * Configures Coil memory + disk caches, video frame decoding, and default crossfade.
  */
 class GalleryApplication : Application(), SingletonImageLoader.Factory {
     override fun newImageLoader(context: PlatformContext): ImageLoader {
         val appContext = this
         return ImageLoader.Builder(context)
             .crossfade(true)
+            .components {
+                add(VideoFrameDecoder.Factory())
+            }
             .memoryCache {
                 MemoryCache.Builder()
                     .maxSizePercent(context, percent = 0.28)

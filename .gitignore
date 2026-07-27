@@ -25,3 +25,9 @@ output.json
 *.keystore
 !debug.keystore
 .kotlin/
+
+# Local build logs
+build-out.txt
+build-release.txt
+.gradle-home/
+

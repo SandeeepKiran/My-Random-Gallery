@@ -1,6 +1,6 @@
 package com.mousy.myrandomgallery.ui.screens
 
-import android.view.ViewGroup
+import android.net.Uri
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -37,27 +37,37 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.viewinterop.AndroidView
+import androidx.lifecycle.compose.LifecycleStartEffect
 import androidx.media3.common.MediaItem as ExoMediaItem
 import androidx.media3.common.Player
+import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.ExoPlayer
-import androidx.media3.ui.PlayerView
+import androidx.media3.ui.compose.ContentFrame
 import com.mousy.myrandomgallery.data.model.MediaItem
 import com.mousy.myrandomgallery.data.model.MultiVideoCell
 import com.mousy.myrandomgallery.data.model.MultiVideoState
 import com.mousy.myrandomgallery.ui.components.EmptyFoldersState
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
-import android.net.Uri
 
-/** DEVICE-ONLY: Multi-video grid with ExoPlayer instances and landscape lock handled in Activity. */
+/**
+ * DEVICE-ONLY: Multi-video grid with ExoPlayer instances and landscape lock handled in Activity.
+ *
+ * Note (#11): Media3 1.10.1 release notes mention PlayerPool / rememberPooledPlayer, but those
+ * symbols are not present in the published `media3-common-ktx` / `media3-ui-compose` 1.10.1 AARs.
+ * Fallback: one ExoPlayer per cell with LifecycleStartEffect (onStopOrDispose release).
+ */
+@OptIn(UnstableApi::class)
 @Composable
 fun MultiVideoScreen(
     state: MultiVideoState,
@@ -155,7 +165,6 @@ fun MultiVideoScreen(
                     val cols = if (state.count == 4) 2 else 1
                     val rows = if (state.count == 4) 2 else state.count
                     if (state.landscape) {
-                        // True fullscreen quadrants — no gaps, each cell fills its share.
                         Column(modifier = Modifier.fillMaxSize()) {
                             repeat(rows) { row ->
                                 Row(modifier = Modifier.weight(1f).fillMaxWidth()) {
@@ -241,6 +250,7 @@ fun MultiVideoScreen(
     }
 }
 
+@OptIn(UnstableApi::class)
 @Composable
 private fun MultiVideoCellCard(
     cell: MultiVideoCell,
@@ -345,6 +355,7 @@ private fun MultiVideoCellCard(
     }
 }
 
+@OptIn(UnstableApi::class)
 @Composable
 private fun MultiVideoPlayer(
     uri: Uri,
@@ -353,49 +364,44 @@ private fun MultiVideoPlayer(
     onProgress: (Float) -> Unit,
 ) {
     val context = LocalContext.current
-    val player = remember(uri) {
-        ExoPlayer.Builder(context).build().apply {
+    var player by remember { mutableStateOf<ExoPlayer?>(null) }
+
+    LifecycleStartEffect(uri) {
+        val exo = ExoPlayer.Builder(context).build().apply {
             setMediaItem(ExoMediaItem.fromUri(uri))
             repeatMode = Player.REPEAT_MODE_ONE
             prepare()
         }
+        player = exo
+        onStopOrDispose {
+            exo.release()
+            if (player === exo) player = null
+        }
     }
 
-    DisposableEffect(player) {
-        onDispose { player.release() }
+    LaunchedEffect(muted, player) {
+        player?.volume = if (muted) 0f else 1f
     }
 
-    LaunchedEffect(muted) {
-        player.volume = if (muted) 0f else 1f
-    }
-
-    LaunchedEffect(playing) {
-        if (playing) player.play() else player.pause()
+    LaunchedEffect(playing, player) {
+        val exo = player ?: return@LaunchedEffect
+        if (playing) exo.play() else exo.pause()
     }
 
     LaunchedEffect(player, playing) {
+        val exo = player ?: return@LaunchedEffect
         while (isActive) {
             delay(250)
-            val dur = player.duration
+            val dur = exo.duration
             if (dur > 0) {
-                onProgress((player.currentPosition.toFloat() / dur.toFloat()).coerceIn(0f, 1f))
+                onProgress((exo.currentPosition.toFloat() / dur.toFloat()).coerceIn(0f, 1f))
             }
         }
     }
 
-    AndroidView(
-        factory = { ctx ->
-            PlayerView(ctx).apply {
-                this.player = player
-                useController = false
-                resizeMode = androidx.media3.ui.AspectRatioFrameLayout.RESIZE_MODE_ZOOM
-                layoutParams = ViewGroup.LayoutParams(
-                    ViewGroup.LayoutParams.MATCH_PARENT,
-                    ViewGroup.LayoutParams.MATCH_PARENT,
-                )
-            }
-        },
-        update = { it.player = player },
+    ContentFrame(
+        player = player,
         modifier = Modifier.fillMaxSize(),
+        contentScale = ContentScale.Crop,
     )
 }

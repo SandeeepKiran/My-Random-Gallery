@@ -55,7 +55,6 @@ import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
@@ -75,12 +74,12 @@ import androidx.compose.ui.input.pointer.positionChanged
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.viewinterop.AndroidView
+import androidx.lifecycle.compose.LifecycleStartEffect
 import androidx.media3.common.MediaItem as ExoMediaItem
 import androidx.media3.common.Player
+import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.ExoPlayer
-import androidx.media3.ui.AspectRatioFrameLayout
-import androidx.media3.ui.PlayerView
+import androidx.media3.ui.compose.ContentFrame
 import androidx.compose.ui.graphics.painter.ColorPainter
 import coil3.compose.AsyncImage
 import coil3.request.CachePolicy
@@ -487,8 +486,9 @@ private fun ZoomableImageSurface(
 
 /**
  * Video/audio with custom Material 3 control bar (mute, scrubber, play/pause, immersive).
- * PlayerView controllers are disabled — chrome is Compose overlay so layout stays stable.
+ * Uses media3-ui-compose ContentFrame; chrome stays Compose overlay so layout stays stable.
  */
+@OptIn(UnstableApi::class)
 @Composable
 private fun MediaPlayerSurface(
     item: MediaItem,
@@ -513,10 +513,10 @@ private fun MediaPlayerSurface(
     var scrubbing by remember { mutableStateOf(false) }
     var scrubValue by remember { mutableFloatStateOf(0f) }
 
-    DisposableEffect(item.uri, item.stableKey, loopVideos, slideshowMode) {
+    // minSdk 30: LifecycleStartEffect (onStart/onStop) is the recommended player gate.
+    LifecycleStartEffect(item.uri, item.stableKey, loopVideos, slideshowMode) {
         val exo = ExoPlayer.Builder(context).build().apply {
             setMediaItem(ExoMediaItem.fromUri(item.uri))
-            // View mode: loop setting loops or stops. Slideshow: loop in place when enabled.
             repeatMode = if (loopVideos) Player.REPEAT_MODE_ONE else Player.REPEAT_MODE_OFF
             prepare()
             playWhenReady = true
@@ -530,7 +530,7 @@ private fun MediaPlayerSurface(
         }
         exo.addListener(listener)
         player = exo
-        onDispose {
+        onStopOrDispose {
             exo.removeListener(listener)
             exo.release()
             if (player === exo) player = null
@@ -580,23 +580,11 @@ private fun MediaPlayerSurface(
                 }
             },
     ) {
-        val currentPlayer = player
-        if (currentPlayer != null) {
-            AndroidView(
-                factory = { ctx ->
-                    PlayerView(ctx).apply {
-                        useController = false
-                        resizeMode = AspectRatioFrameLayout.RESIZE_MODE_FIT
-                        this.player = currentPlayer
-                    }
-                },
-                update = { view ->
-                    if (view.player !== currentPlayer) view.player = currentPlayer
-                    view.useController = false
-                },
-                modifier = Modifier.fillMaxSize(),
-            )
-        }
+        ContentFrame(
+            player = player,
+            modifier = Modifier.fillMaxSize(),
+            contentScale = ContentScale.Fit,
+        )
 
         // M3 tonal media control bar — overlay only
         AnimatedVisibility(

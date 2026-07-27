@@ -20,6 +20,18 @@ enum class AppTab(val label: String, val icon: ImageVector, val locked: Boolean 
     MULTIVIDEO("Videos", Icons.Default.VideoLibrary),
     SETTINGS("More", Icons.Default.MoreHoriz, locked = true);
 
+    /** Compact nav label for NavigationBar / suite (icon-first but not empty). */
+    val shortLabel: String
+        get() = when (this) {
+            FAV -> "Favs"
+            RECENT -> "Recent"
+            GALLERY -> "Gallery"
+            SLIDESHOW -> "Show"
+            ALBUM -> "Albums"
+            MULTIVIDEO -> "Videos"
+            SETTINGS -> "More"
+        }
+
     val key: String get() = name.lowercase()
 
     companion object {

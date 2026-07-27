@@ -51,7 +51,7 @@ Tip: capture on a real phone after granting folder access — empty states are i
 
 ### Tabs (bottom navigation)
 
-Bottom nav is **icons only** (no text labels under tabs). Accessibility labels still come from each tab’s name.
+Bottom nav uses **Material 3 Adaptive Navigation Suite** (`NavigationSuiteScaffold`) — on phones it stays a bottom bar with short labels; larger windows can expand to rail/drawer with full labels.
 
 | Tab | Description | Default |
 |-----|-------------|---------|
@@ -266,7 +266,19 @@ SettingsRepository (DataStore)
 | **Media** | DEVICE-ONLY scanning, playback, copy/zip |
 | **Version gate** | API 30–36 branching for permissions & privacy APIs |
 
-**Stack:** Compose · Material 3 · ViewModel · DataStore · Media3 ExoPlayer · Coil 3 · DocumentFile / SAF
+**Stack:** Compose · Material 3 Adaptive Navigation Suite · ViewModel · DataStore · Media3 1.10 (`ContentFrame`; multi-video uses per-cell `LifecycleStartEffect` — `PlayerPool` not in published 1.10.1 AARs yet) · Coil 3.5 · DocumentFile / SAF
+
+Tabs use ViewModel + `AnimatedContent` (navigation-compose removed as unused). Immersive viewer overlays the bottom bar so media does not re-layout when chrome fades.
+
+### Baseline Profiles
+
+Checked-in rules live in `app/src/main/baseline-prof.txt` (installed via ProfileInstaller). The `:baselineprofile` Macrobenchmark module can regenerate them on a device/emulator:
+
+```powershell
+.\gradlew.bat :app:generateReleaseBaselineProfile
+```
+
+CI runs `assembleDebug` only and does not require an emulator for profile generation.
 
 ---
 
@@ -339,6 +351,7 @@ When behavior or UI conflicts with code, **prefer the wireframe** unless a platf
 
 ```text
 My_Random_Gallery/
+├── baselineprofile/              # Macrobenchmark Baseline Profile generator
 ├── Design_Files/                 # Interactive HTML wireframe (source of truth)
 ├── docs/
 │   └── DEVICE_ONLY.md            # Device API notes

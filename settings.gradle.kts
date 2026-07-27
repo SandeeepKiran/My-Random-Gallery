@@ -22,3 +22,4 @@ dependencyResolutionManagement {
 
 rootProject.name = "MyRandomGallery"
 include(":app")
+include(":baselineprofile")
