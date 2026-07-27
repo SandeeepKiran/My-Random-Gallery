@@ -83,6 +83,7 @@ class SettingsRepository(private val context: Context) {
         prefs[Keys.COPY_FAVS] = updated.copyFavs
         prefs[Keys.COPY_FAV_PATH] = updated.copyFavPath
         prefs[Keys.COPY_FAV_TREE_URI] = updated.copyFavTreeUri
+        prefs[Keys.SHOW_ALL_FAVOURITES] = updated.showAllFavourites
         prefs[Keys.HIDDEN_FOLDERS] = encodeHiddenFolders(updated.hiddenFolders)
         prefs[Keys.TAB_FEATURE_MV] = updated.tabFeatures.multivideo
         prefs[Keys.TAB_FEATURE_ALBUM] = updated.tabFeatures.album
@@ -167,10 +168,11 @@ class SettingsRepository(private val context: Context) {
             disableDeleteOptions = disableDelete,
             disableEditDelete = prefs[Keys.DISABLE_EDIT_DELETE] ?: false,
             hapticsEnabled = prefs[Keys.HAPTICS] ?: true,
-            thumbnailPadding = prefs[Keys.THUMBNAIL_PADDING] ?: true,
+            thumbnailPadding = prefs[Keys.THUMBNAIL_PADDING] ?: false,
             copyFavs = prefs[Keys.COPY_FAVS] ?: false,
             copyFavPath = prefs[Keys.COPY_FAV_PATH] ?: "",
             copyFavTreeUri = prefs[Keys.COPY_FAV_TREE_URI] ?: "",
+            showAllFavourites = prefs[Keys.SHOW_ALL_FAVOURITES] ?: false,
             hiddenFolders = decodeHiddenFolders(prefs[Keys.HIDDEN_FOLDERS]),
             tabFeatures = features,
             tabOrder = decodeTabOrder(prefs[Keys.TAB_ORDER]),
@@ -213,6 +215,7 @@ class SettingsRepository(private val context: Context) {
         val COPY_FAVS = booleanPreferencesKey("copy_favs")
         val COPY_FAV_PATH = stringPreferencesKey("copy_fav_path")
         val COPY_FAV_TREE_URI = stringPreferencesKey("copy_fav_tree_uri")
+        val SHOW_ALL_FAVOURITES = booleanPreferencesKey("show_all_favourites")
         val HIDDEN_FOLDERS = stringPreferencesKey("hidden_folders")
         val TAB_FEATURE_MV = booleanPreferencesKey("tab_feature_mv")
         val TAB_FEATURE_ALBUM = booleanPreferencesKey("tab_feature_album")

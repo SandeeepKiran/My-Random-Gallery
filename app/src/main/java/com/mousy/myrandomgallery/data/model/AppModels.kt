@@ -136,11 +136,13 @@ data class AppSettings(
     /** Legacy alias kept for import/export compatibility. */
     val disableEditDelete: Boolean = false,
     val hapticsEnabled: Boolean = true,
-    /** Padding + rounded corners on gallery thumbnails. */
-    val thumbnailPadding: Boolean = true,
+    /** Padding + rounded corners on gallery thumbnails; off gives an edge-to-edge grid. */
+    val thumbnailPadding: Boolean = false,
     val copyFavs: Boolean = false,
     val copyFavPath: String = "",
     val copyFavTreeUri: String = "",
+    /** Favourites tab ignores the folder selection and shows favourites from anywhere. */
+    val showAllFavourites: Boolean = false,
     val hiddenFolders: Map<String, Boolean> = defaultHiddenFolders(),
     val tabFeatures: TabFeatures = TabFeatures(),
     val tabOrder: List<AppTab> = AppTab.defaultOrder,

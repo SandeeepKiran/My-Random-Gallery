@@ -79,6 +79,31 @@ class MediaRepository(private val context: Context) {
             .sortedBy { it.path }
     }
 
+    /**
+     * Resolves favourite keys anywhere on the device, ignoring the folder selection. Used by the
+     * "show favourites from all folders" option; builds a [MediaItem] only for matching rows.
+     */
+    suspend fun scanFavouritesByKey(
+        favouriteKeys: Set<String>,
+        hiddenFolders: Map<String, Boolean>,
+    ): List<MediaItem> = withContext(Dispatchers.IO) {
+        if (favouriteKeys.isEmpty()) return@withContext emptyList()
+        val found = mutableListOf<MediaItem>()
+        for (collection in mediaCollections) {
+            currentCoroutineContext().ensureActive()
+            found += queryCollection(
+                collection = collection,
+                selectedFolders = emptySet(),
+                hiddenFolders = hiddenFolders,
+                fileTypeFilters = emptyMap(),
+                discoverOnly = true,
+                includeUnsupported = true,
+                keyFilter = favouriteKeys,
+            )
+        }
+        found.distinctBy { it.stableKey }
+    }
+
     suspend fun availableExtensions(selectedFolders: Set<String>): Set<String> =
         withContext(Dispatchers.IO) {
             scanMedia(selectedFolders, emptySet(), emptyMap(), emptyMap())
@@ -141,6 +166,7 @@ class MediaRepository(private val context: Context) {
         fileTypeFilters: Map<String, Boolean>,
         discoverOnly: Boolean,
         includeUnsupported: Boolean = false,
+        keyFilter: Set<String>? = null,
     ): List<MediaItem> {
         val projection = arrayOf(
             MediaStore.MediaColumns._ID,
@@ -207,6 +233,7 @@ class MediaRepository(private val context: Context) {
                 }
 
                 val uri = ContentUris.withAppendedId(collection, id)
+                if (keyFilter != null && "${id}_$uri" !in keyFilter) continue
                 val mediaType = classifyMedia(mime, ext)
                 items += MediaItem(
                     id = id,

@@ -50,7 +50,7 @@ fun AlbumsScreen(
     onItemClick: (MediaItem) -> Unit,
     onItemDoubleTap: (MediaItem) -> Unit,
     onItemLongPress: (MediaItem) -> Unit,
-    onPinchColumns: (Float) -> Unit,
+    onSetColumns: (Int) -> Unit,
     onGoSettings: () -> Unit,
     thumbnailPadding: Boolean = true,
     modifier: Modifier = Modifier,
@@ -94,7 +94,7 @@ fun AlbumsScreen(
                     onItemDoubleTap = onItemDoubleTap,
                     onItemLongPress = onItemLongPress,
                     onSwipeShuffle = {},
-                    onPinchColumns = onPinchColumns,
+                    onSetColumns = onSetColumns,
                     thumbnailPadding = thumbnailPadding,
                     modifier = Modifier.weight(1f),
                 )

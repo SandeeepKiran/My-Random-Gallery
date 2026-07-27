@@ -27,6 +27,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
@@ -80,6 +81,7 @@ import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.LifecycleStartEffect
 import androidx.media3.common.MediaItem as ExoMediaItem
@@ -162,6 +164,7 @@ fun FullscreenViewer(
     chromeAutoHideNonce: Int = 0,
     prefetch: List<MediaItem> = emptyList(),
     gridThumbBucketPx: Int = 256,
+    controlsBottomPadding: Dp = 0.dp,
     modifier: Modifier = Modifier,
 ) {
     var navDirection by remember { mutableIntStateOf(0) }
@@ -234,6 +237,7 @@ fun FullscreenViewer(
                     onTogglePlayLocal = { onUserInteracted() },
                     onVideoEnded = onVideoEnded,
                     onSeekInteracted = onUserInteracted,
+                    controlsBottomPadding = controlsBottomPadding,
                 )
                 null -> Unit
                 else -> ZoomableImageSurface(
@@ -569,6 +573,7 @@ private fun MediaPlayerSurface(
     onTogglePlayLocal: () -> Unit,
     onVideoEnded: () -> Unit,
     onSeekInteracted: () -> Unit,
+    controlsBottomPadding: Dp = 0.dp,
 ) {
     val context = LocalContext.current
     var player by remember { mutableStateOf<ExoPlayer?>(null) }
@@ -583,18 +588,22 @@ private fun MediaPlayerSurface(
     var resumePositionMs by rememberSaveable(item.stableKey) { mutableStateOf(0L) }
     var resumePlayWhenReady by rememberSaveable(item.stableKey) { mutableStateOf(true) }
 
+    // A looping video never reaches STATE_ENDED, so in a slideshow it would play forever and
+    // the show would never move on. Looping is a view-mode behaviour only.
+    val repeatVideo = loopVideos && !slideshowMode
+
     // minSdk 30: LifecycleStartEffect (onStart/onStop) is the recommended player gate.
-    LifecycleStartEffect(item.uri, item.stableKey, loopVideos, slideshowMode) {
+    LifecycleStartEffect(item.uri, item.stableKey, repeatVideo, slideshowMode) {
         val exo = ExoPlayer.Builder(context).build().apply {
             setMediaItem(ExoMediaItem.fromUri(item.uri))
-            repeatMode = if (loopVideos) Player.REPEAT_MODE_ONE else Player.REPEAT_MODE_OFF
+            repeatMode = if (repeatVideo) Player.REPEAT_MODE_ONE else Player.REPEAT_MODE_OFF
             if (resumePositionMs > 0L) seekTo(resumePositionMs)
             prepare()
             playWhenReady = resumePlayWhenReady
         }
         val listener = object : Player.Listener {
             override fun onPlaybackStateChanged(playbackState: Int) {
-                if (playbackState == Player.STATE_ENDED && !loopVideos) {
+                if (playbackState == Player.STATE_ENDED && !repeatVideo) {
                     onVideoEnded()
                 }
             }
@@ -669,7 +678,11 @@ private fun MediaPlayerSurface(
             visible = controlsVisible,
             enter = fadeIn(tween(220)),
             exit = fadeOut(tween(180)),
-            modifier = Modifier.align(Alignment.BottomCenter),
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
+                .navigationBarsPadding()
+                // Sit above the overlaid tab bar instead of behind it.
+                .padding(bottom = controlsBottomPadding),
         ) {
             val scheme = MaterialTheme.colorScheme
             Surface(

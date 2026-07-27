@@ -21,8 +21,11 @@ import androidx.compose.animation.scaleOut
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.statusBarsPadding
-import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -36,6 +39,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.unit.dp
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
@@ -54,6 +58,7 @@ import com.mousy.myrandomgallery.ui.components.HiddenFoldersDialog
 import com.mousy.myrandomgallery.ui.components.ResetSettingsConfirmDialog
 import com.mousy.myrandomgallery.ui.components.SelectionBar
 import com.mousy.myrandomgallery.ui.components.VideoPickerDialog
+import com.mousy.myrandomgallery.ui.navigation.GalleryTabBar
 import com.mousy.myrandomgallery.ui.navigation.MainScaffold
 import com.mousy.myrandomgallery.ui.screens.AlbumsScreen
 import com.mousy.myrandomgallery.ui.screens.FavouritesScreen
@@ -266,10 +271,13 @@ fun GalleryApp(
     ) {
         // Status-bar inset lives here rather than around the whole scaffold so the fullscreen
         // viewer (a sibling below) stays edge-to-edge without shifting the screen behind it.
+        // The tab bar overlays the bottom, so screens reserve room for it here.
         Box(
             Modifier
                 .fillMaxSize()
-                .statusBarsPadding(),
+                .statusBarsPadding()
+                .navigationBarsPadding()
+                .padding(bottom = if (hideBottomBar) 0.dp else GalleryTabBar.Height),
         ) {
             AnimatedContent(
                 targetState = state.currentTab,
@@ -309,7 +317,8 @@ fun GalleryApp(
                     },
                     onItemLongPress = { viewModel.enterSelectMode(it.stableKey) },
                     onSwipeShuffle = viewModel::onGridSwipe,
-                    onPinchColumns = viewModel::adjustColumnsFromPinch,
+                    onSetColumns = viewModel::setColumns,
+                    prefetch = state.galleryPrefetch,
                     onReachedEnd = viewModel::extendSampleIfNeeded,
                     onGoSettings = { viewModel.selectTab(AppTab.SETTINGS) },
                 )
@@ -323,6 +332,8 @@ fun GalleryApp(
                     favWindow = state.settings.favWindow,
                     favTypeMenuOpen = state.favTypeMenuOpen,
                     thumbnailPadding = state.settings.thumbnailPadding,
+                    showAllFolders = state.settings.showAllFavourites,
+                    onToggleAllFolders = viewModel::toggleShowAllFavourites,
                     onToggleFavTypeMenu = viewModel::toggleFavTypeMenu,
                     onToggleFavType = viewModel::toggleFavType,
                     onSelectFavWindow = viewModel::setFavWindow,
@@ -332,7 +343,7 @@ fun GalleryApp(
                         viewModel.toggleFavourite(it.stableKey)
                     },
                     onItemLongPress = { viewModel.enterSelectMode(it.stableKey) },
-                    onPinchColumns = viewModel::adjustColumnsFromPinch,
+                    onSetColumns = viewModel::setColumns,
                     onGoSettings = { viewModel.selectTab(AppTab.SETTINGS) },
                 )
                 AppTab.RECENT -> RecentScreen(
@@ -354,7 +365,7 @@ fun GalleryApp(
                         viewModel.toggleFavourite(it.stableKey)
                     },
                     onItemLongPress = { viewModel.enterSelectMode(it.stableKey) },
-                    onPinchColumns = viewModel::adjustColumnsFromPinch,
+                    onSetColumns = viewModel::setColumns,
                     onGoSettings = { viewModel.selectTab(AppTab.SETTINGS) },
                 )
                 AppTab.MULTIVIDEO -> MultiVideoScreen(
@@ -389,7 +400,7 @@ fun GalleryApp(
                     onItemClick = { handleItemClick(it, state.albumDetail) },
                     onItemDoubleTap = { viewModel.toggleFavourite(it.stableKey) },
                     onItemLongPress = { viewModel.enterSelectMode(it.stableKey) },
-                    onPinchColumns = viewModel::adjustColumnsFromPinch,
+                    onSetColumns = viewModel::setColumns,
                     onGoSettings = { viewModel.selectTab(AppTab.SETTINGS) },
                 )
                 AppTab.SETTINGS -> SettingsScreen(
@@ -409,6 +420,7 @@ fun GalleryApp(
                     onToggleFileType = viewModel::toggleFileType,
                     onToggleBehaviour = viewModel::toggleBehaviour,
                     onToggleCopyFavs = viewModel::toggleCopyFavs,
+                    onToggleShowAllFavourites = viewModel::toggleShowAllFavourites,
                     onChooseFavFolder = { favFolderLauncher.launch(null) },
                     onOpenHiddenFolders = viewModel::openHiddenFoldersDialog,
                     onExportSettings = {
@@ -471,8 +483,14 @@ fun GalleryApp(
                 }
             }
 
+            // Slim and non-blocking: rescans happen on ordinary actions like ticking a folder,
+            // and a centred spinner made those feel like the app had stalled.
             if (state.loading) {
-                CircularProgressIndicator(modifier = Modifier.align(Alignment.Center))
+                LinearProgressIndicator(
+                    modifier = Modifier
+                        .align(Alignment.TopCenter)
+                        .fillMaxWidth(),
+                )
             }
         }
 
@@ -533,6 +551,8 @@ fun GalleryApp(
                 chromeAutoHideNonce = state.viewerChromeNonce,
                 prefetch = state.viewerPrefetch,
                 gridThumbBucketPx = gridThumbBucketPx,
+                // Keep the scrubber and play controls clear of the overlaid tab bar.
+                controlsBottomPadding = if (hideBottomBar) 0.dp else GalleryTabBar.Height,
                 modifier = Modifier.fillMaxSize(),
             )
         }

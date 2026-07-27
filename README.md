@@ -52,7 +52,8 @@ Tip: capture on a real phone after granting folder access — empty states are i
 
 ### Tabs (bottom navigation)
 
-Bottom nav uses **Material 3 Adaptive Navigation Suite** (`NavigationSuiteScaffold`) — on phones it stays a bottom bar with short labels; larger windows can expand to rail/drawer with full labels.
+Bottom nav is a compact **icon-only** bar (48dp) that overlays the content, so almost all of the
+screen goes to thumbnails.
 
 | Tab | Description | Default |
 |-----|-------------|---------|
@@ -73,7 +74,7 @@ Default order: Favourites → Recent → Gallery → Slideshow → More. Tab ord
 | Double-tap | Grid tile | Toggle favourite |
 | Long-press (~2.5s) | Grid tile | Enter multi-select |
 | Swipe L/R or U/D | Gallery (swipe mode) | New random set (up/left) or history back (down/right) |
-| Pinch | Grid | Change columns (1–6) |
+| Pinch | Grid | Change columns (1–6), continuously — one pinch can cross several steps |
 | Tap | Fullscreen viewer / slideshow | Toggle chrome (top bar **and** bottom tabs) |
 | Swipe L/R | Viewer | Previous / next item |
 | Swipe up | Viewer photos | Delete after confirmation (if safety toggles allow) |
@@ -99,6 +100,10 @@ Default order: Favourites → Recent → Gallery → Slideshow → More. Tab ord
 
 ### Storage & data
 
+- Favourites are mixed into the normal Gallery at roughly a **1-in-25** chance per tile, so the
+  things you liked resurface far more often than their share of the library would give them
+- **Favourites from all folders** toggle (Settings, and the folder icon on the Favourites tab)
+  shows favourited media even when its folder isn't a selected source
 - Source folders via **SAF** (Storage Access Framework) + MediaStore discovery
 - File-type filters detected from selected folders, with cached per-extension counts and an
   on-demand **Refresh counts** action (labelled with the time of the last scan)
@@ -323,14 +328,18 @@ Because the order is reproducible from the seed, swipe-back history stores **40 
 of 40 pages of file keys, and "load more" can extend the same draw without ever repeating an item.
 Favourites, Recent, and Albums are never sampled — they're already bounded by their own filters.
 
-When a slice is active the Gallery footer says so, e.g. `random 1200 of 9847`.
+Every shuffle draws from the **whole** filtered library, not from the previous slice, so given
+enough shuffles you'll see everything. The slice only bounds how much is prepared at once.
+
+The seed of the *next* set is chosen before you swipe, which is what lets its first page be
+decoded in advance — that's why a shuffle lands on thumbnails rather than an empty grid.
 
 ### 2. A sample size that learns your habits
 
 The app tracks a moving average of how many items you actually view per session (starting at 800),
-sizes the slice to **1.5×** that average clamped to `[300, total]`, and widens it when you reach
-~80% of what's loaded. A user who glances at 100 photos and one who scrolls through 3,000 both end
-up with a working set that fits how they use the app.
+sizes the slice to **1.5×** that average clamped to `[600, total]`, and widens it when you reach
+~80% of what's loaded. Sessions shorter than 15 items are ignored, so opening a single photo and
+backing out doesn't drag the average down.
 
 ### 3. Nothing heavy on the main thread
 
@@ -447,7 +456,8 @@ My_Random_Gallery/
 | Problem | What to try |
 |---------|-------------|
 | Empty Gallery | Add at least one SAF folder in **More**; check **File Types** |
-| Gallery shows fewer items than my library | Intentional — the footer shows `random N of M`. Swipe for a new set, or scroll in list mode to load more |
+| Gallery shows fewer items than my library | Intentional — a random slice is prepared per session. Every shuffle re-draws from the whole library, so nothing is permanently out of reach |
+| Grid tiles have gaps | Turn off **Padded thumbnails** in More → Playback & Safety for an edge-to-edge grid (the default for new installs) |
 | File-type counts look stale | They're cached from the last scan; tap **Refresh counts** in **More → File Types** |
 | Accent is Rose, not Sand | Sand is the default for new installs; an existing install keeps its stored choice. Pick Sand, or use **Reset all settings** |
 | Permission denied | Re-open app → system settings → allow Photos/Videos; or rely on SAF folders |

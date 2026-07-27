@@ -1,42 +1,48 @@
 package com.mousy.myrandomgallery.ui.navigation
 
 import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.core.Spring
-import androidx.compose.animation.core.spring
+import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.NavigationBar
-import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
-import androidx.compose.material3.Text
-import androidx.compose.material3.adaptive.currentWindowAdaptiveInfo
-import androidx.compose.material3.adaptive.navigationsuite.NavigationSuiteScaffold
-import androidx.compose.material3.adaptive.navigationsuite.NavigationSuiteScaffoldDefaults
-import androidx.compose.material3.adaptive.navigationsuite.NavigationSuiteType
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.unit.dp
 import com.mousy.myrandomgallery.data.model.AppTab
 
+/** Icon-only bar: every dp saved here is another row of thumbnails. */
+object GalleryTabBar {
+    val Height = 48.dp
+}
+
 /**
- * Adaptive navigation suite on phones still reads as a bottom bar.
+ * App shell: full-bleed content with a compact icon-only tab bar floating over the bottom.
  *
- * Immersive viewer: suite layout type is [NavigationSuiteType.None] so media stays
- * full-bleed (no re-pad / re-center). When chrome is visible, a compact NavigationBar
- * overlays using real [WindowInsets.navigationBars] — intentional overlay, not Scaffold padding.
+ * The bar overlays rather than reserving layout space, so the fullscreen viewer stays edge to
+ * edge and media never re-lays-out when chrome fades. Screens that scroll get bottom padding
+ * instead (see [contentBottomPadding]).
  */
 @Composable
 fun MainScaffold(
@@ -51,15 +57,6 @@ fun MainScaffold(
     onTabSelected: (AppTab) -> Unit,
     content: @Composable () -> Unit,
 ) {
-    val adaptiveInfo = currentWindowAdaptiveInfo()
-    val calculatedType = NavigationSuiteScaffoldDefaults.calculateFromAdaptiveInfo(adaptiveInfo)
-    // Viewer always uses None so immersive media never jumps with suite show/hide.
-    val layoutType = when {
-        viewerOpen -> NavigationSuiteType.None
-        !bottomBarVisible -> NavigationSuiteType.None
-        else -> calculatedType
-    }
-
     Scaffold(
         snackbarHost = snackbarHost,
         contentWindowInsets = WindowInsets(0, 0, 0, 0),
@@ -69,38 +66,8 @@ fun MainScaffold(
                 .fillMaxSize()
                 .padding(padding),
         ) {
-            NavigationSuiteScaffold(
-                layoutType = layoutType,
-                navigationSuiteItems = {
-                    if (!viewerOpen && bottomBarVisible) {
-                        visibleTabs.forEach { tab ->
-                            val selected = currentTab == tab
-                            item(
-                                selected = selected,
-                                onClick = { onTabSelected(tab) },
-                                icon = {
-                                    Icon(tab.icon, contentDescription = tab.label)
-                                },
-                                label = {
-                                    Text(
-                                        if (layoutType == NavigationSuiteType.NavigationBar) {
-                                            tab.shortLabel
-                                        } else {
-                                            tab.label
-                                        },
-                                    )
-                                },
-                            )
-                        }
-                    }
-                },
-                modifier = Modifier.fillMaxSize(),
-            ) {
-                // Full-bleed on purpose: the status-bar inset is applied per screen inside
-                // [content] so that opening the viewer doesn't shift the screen behind it.
-                Box(modifier = Modifier.fillMaxSize()) {
-                    content()
-                }
+            Box(modifier = Modifier.fillMaxSize()) {
+                content()
             }
 
             if (selectMode) {
@@ -114,34 +81,70 @@ fun MainScaffold(
                 }
             }
 
-            // Immersive overlay bar: same selection rules as before, real nav-bar insets.
             AnimatedVisibility(
-                visible = viewerOpen && bottomBarVisible,
-                enter = fadeIn(spring(stiffness = Spring.StiffnessMediumLow)) +
-                    slideInVertically(spring(stiffness = Spring.StiffnessMediumLow)) { it },
-                exit = fadeOut(spring(stiffness = Spring.StiffnessMedium)) +
-                    slideOutVertically(spring(stiffness = Spring.StiffnessMedium)) { it },
-                modifier = Modifier
-                    .align(Alignment.BottomCenter)
-                    .navigationBarsPadding(),
+                visible = bottomBarVisible,
+                enter = fadeIn(tween(140)) + slideInVertically(tween(160)) { it },
+                exit = fadeOut(tween(120)) + slideOutVertically(tween(140)) { it },
+                modifier = Modifier.align(Alignment.BottomCenter),
             ) {
-                NavigationBar(
-                    containerColor = MaterialTheme.colorScheme.surfaceContainer,
-                    tonalElevation = 0.dp,
+                CompactTabBar(
+                    tabs = visibleTabs,
+                    isSelected = { tab ->
+                        if (viewerOpen && viewerSlideshowMode) tab == AppTab.SLIDESHOW
+                        else tab == currentTab
+                    },
+                    onTabSelected = onTabSelected,
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun CompactTabBar(
+    tabs: List<AppTab>,
+    isSelected: (AppTab) -> Boolean,
+    onTabSelected: (AppTab) -> Unit,
+) {
+    Surface(
+        color = MaterialTheme.colorScheme.surfaceContainer,
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .navigationBarsPadding()
+                .height(GalleryTabBar.Height),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceEvenly,
+        ) {
+            tabs.forEach { tab ->
+                val selected = isSelected(tab)
+                Box(
+                    modifier = Modifier
+                        .weight(1f)
+                        .fillMaxHeight()
+                        .clickable(onClick = { onTabSelected(tab) }),
+                    contentAlignment = Alignment.Center,
                 ) {
-                    visibleTabs.forEach { tab ->
-                        val selected = when {
-                            viewerSlideshowMode -> tab == AppTab.SLIDESHOW
-                            else -> tab == currentTab
-                        }
-                        NavigationBarItem(
-                            selected = selected,
-                            onClick = { onTabSelected(tab) },
-                            icon = {
-                                Icon(tab.icon, contentDescription = tab.label)
+                    Box(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(50))
+                            .background(
+                                if (selected) MaterialTheme.colorScheme.secondaryContainer
+                                else androidx.compose.ui.graphics.Color.Transparent,
+                            )
+                            .padding(horizontal = 14.dp, vertical = 4.dp),
+                    ) {
+                        Icon(
+                            tab.icon,
+                            contentDescription = tab.label,
+                            tint = if (selected) {
+                                MaterialTheme.colorScheme.onSecondaryContainer
+                            } else {
+                                MaterialTheme.colorScheme.onSurfaceVariant
                             },
-                            label = { Text(tab.shortLabel) },
-                            alwaysShowLabel = false,
+                            modifier = Modifier.size(22.dp),
                         )
                     }
                 }

@@ -8,9 +8,12 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.CalendarMonth
 import androidx.compose.material.icons.filled.FilterList
+import androidx.compose.material.icons.filled.Folder
+import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
@@ -39,6 +42,9 @@ fun MediaListFilterBar(
     onToggleTypeMenu: () -> Unit,
     onToggleType: (String) -> Unit,
     onSelectWindow: (FavWindow) -> Unit,
+    /** Favourites only: include items from folders that aren't currently selected. */
+    allFoldersEnabled: Boolean? = null,
+    onToggleAllFolders: () -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
     var dateMenuOpen by remember { mutableStateOf(false) }
@@ -51,7 +57,24 @@ fun MediaListFilterBar(
             .padding(horizontal = 12.dp, vertical = 14.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Text(title, style = MaterialTheme.typography.headlineSmall, modifier = Modifier.weight(1f))
+        Text(title, style = MaterialTheme.typography.titleLarge, modifier = Modifier.weight(1f))
+        if (allFoldersEnabled != null) {
+            IconButton(onClick = onToggleAllFolders) {
+                Icon(
+                    if (allFoldersEnabled) Icons.Default.FolderOpen else Icons.Default.Folder,
+                    contentDescription = if (allFoldersEnabled) {
+                        "Showing favourites from all folders"
+                    } else {
+                        "Showing favourites from selected folders only"
+                    },
+                    tint = if (allFoldersEnabled) {
+                        MaterialTheme.colorScheme.primary
+                    } else {
+                        MaterialTheme.colorScheme.onSurfaceVariant
+                    },
+                )
+            }
+        }
         Box {
             OutlinedButton(onClick = onToggleTypeMenu) {
                 Icon(Icons.Default.FilterList, null, modifier = Modifier.size(18.dp))

@@ -33,13 +33,15 @@ fun FavouritesScreen(
     favTypes: FileTypeFilter,
     favWindow: FavWindow,
     favTypeMenuOpen: Boolean,
+    showAllFolders: Boolean,
+    onToggleAllFolders: () -> Unit,
     onToggleFavTypeMenu: () -> Unit,
     onToggleFavType: (String) -> Unit,
     onSelectFavWindow: (FavWindow) -> Unit,
     onItemClick: (MediaItem) -> Unit,
     onItemDoubleTap: (MediaItem) -> Unit,
     onItemLongPress: (MediaItem) -> Unit,
-    onPinchColumns: (Float) -> Unit,
+    onSetColumns: (Int) -> Unit,
     onGoSettings: () -> Unit,
     thumbnailPadding: Boolean = true,
     modifier: Modifier = Modifier,
@@ -53,6 +55,8 @@ fun FavouritesScreen(
             onToggleTypeMenu = onToggleFavTypeMenu,
             onToggleType = onToggleFavType,
             onSelectWindow = onSelectFavWindow,
+            allFoldersEnabled = showAllFolders,
+            onToggleAllFolders = onToggleAllFolders,
         )
 
         when {
@@ -90,7 +94,7 @@ fun FavouritesScreen(
                 onItemDoubleTap = onItemDoubleTap,
                 onItemLongPress = onItemLongPress,
                 onSwipeShuffle = {},
-                onPinchColumns = onPinchColumns,
+                onSetColumns = onSetColumns,
                 thumbnailPadding = thumbnailPadding,
                 modifier = Modifier.weight(1f),
             )

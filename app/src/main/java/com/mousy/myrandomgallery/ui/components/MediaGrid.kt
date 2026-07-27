@@ -40,6 +40,7 @@ import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
@@ -85,6 +86,11 @@ private const val LONG_PRESS_MS = 2_500L
 private const val DOUBLE_TAP_MS = 280L
 /** Higher than default so scroll/swipe is preferred over opening a photo. */
 private const val SWIPE_TRIGGER_PX = 140f
+private const val MIN_COLUMNS = 1
+private const val MAX_COLUMNS = 6
+/** Short enough to feel immediate, long enough to read as a swipe rather than a cut. */
+private const val SWIPE_OUT_MS = 120
+private const val SWIPE_IN_MS = 150
 
 @Composable
 fun MediaGrid(
@@ -97,7 +103,7 @@ fun MediaGrid(
     onItemDoubleTap: (MediaItem) -> Unit,
     onItemLongPress: (MediaItem) -> Unit,
     onSwipeShuffle: (Int) -> Unit,
-    onPinchColumns: (Float) -> Unit,
+    onSetColumns: (Int) -> Unit,
     thumbnailPadding: Boolean = true,
     hapticsEnabled: Boolean = true,
     onReachedEnd: (Int) -> Unit = {},
@@ -106,6 +112,9 @@ fun MediaGrid(
     val landscape = LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
     // Landscape: denser columns so more than ~one row is visible.
     val cols = remember(columns, landscape) { ThumbSpec.effectiveColumns(columns, landscape) }
+    // Read live inside the long-lived pinch handler without restarting it.
+    val currentColumns by rememberUpdatedState(columns)
+    val setColumns by rememberUpdatedState(onSetColumns)
     val density = LocalDensity.current
     val thumbPx = remember(columns, landscape, density) {
         ThumbSpec.gridBucket(columns, landscape, density)
@@ -243,24 +252,18 @@ fun MediaGrid(
                                                     val commitRight = dragAccumX > SWIPE_TRIGGER_PX
                                                     when {
                                                         commitLeft -> {
-                                                            swipeOffsetX.animateTo(-width, tween(220))
+                                                            swipeOffsetX.animateTo(-width, tween(SWIPE_OUT_MS))
                                                             onSwipeShuffle(1)
                                                             GalleryHaptics.tick(view, hapticsEnabled)
-                                                            swipeOffsetX.snapTo(width * 0.35f)
-                                                            swipeOffsetX.animateTo(0f, spring(
-                                                                dampingRatio = Spring.DampingRatioNoBouncy,
-                                                                stiffness = Spring.StiffnessMediumLow,
-                                                            ))
+                                                            swipeOffsetX.snapTo(width * 0.28f)
+                                                            swipeOffsetX.animateTo(0f, tween(SWIPE_IN_MS))
                                                         }
                                                         commitRight -> {
-                                                            swipeOffsetX.animateTo(width, tween(220))
+                                                            swipeOffsetX.animateTo(width, tween(SWIPE_OUT_MS))
                                                             onSwipeShuffle(-1)
                                                             GalleryHaptics.tick(view, hapticsEnabled)
-                                                            swipeOffsetX.snapTo(-width * 0.35f)
-                                                            swipeOffsetX.animateTo(0f, spring(
-                                                                dampingRatio = Spring.DampingRatioNoBouncy,
-                                                                stiffness = Spring.StiffnessMediumLow,
-                                                            ))
+                                                            swipeOffsetX.snapTo(-width * 0.28f)
+                                                            swipeOffsetX.animateTo(0f, tween(SWIPE_IN_MS))
                                                         }
                                                         else -> swipeOffsetX.animateTo(0f, spring(
                                                             dampingRatio = Spring.DampingRatioMediumBouncy,
@@ -274,24 +277,18 @@ fun MediaGrid(
                                                     val commitDown = dragAccumY > SWIPE_TRIGGER_PX
                                                     when {
                                                         commitUp -> {
-                                                            swipeOffsetY.animateTo(-height, tween(220))
+                                                            swipeOffsetY.animateTo(-height, tween(SWIPE_OUT_MS))
                                                             onSwipeShuffle(1)
                                                             GalleryHaptics.tick(view, hapticsEnabled)
-                                                            swipeOffsetY.snapTo(height * 0.35f)
-                                                            swipeOffsetY.animateTo(0f, spring(
-                                                                dampingRatio = Spring.DampingRatioNoBouncy,
-                                                                stiffness = Spring.StiffnessMediumLow,
-                                                            ))
+                                                            swipeOffsetY.snapTo(height * 0.28f)
+                                                            swipeOffsetY.animateTo(0f, tween(SWIPE_IN_MS))
                                                         }
                                                         commitDown -> {
-                                                            swipeOffsetY.animateTo(height, tween(220))
+                                                            swipeOffsetY.animateTo(height, tween(SWIPE_OUT_MS))
                                                             onSwipeShuffle(-1)
                                                             GalleryHaptics.tick(view, hapticsEnabled)
-                                                            swipeOffsetY.snapTo(-height * 0.35f)
-                                                            swipeOffsetY.animateTo(0f, spring(
-                                                                dampingRatio = Spring.DampingRatioNoBouncy,
-                                                                stiffness = Spring.StiffnessMediumLow,
-                                                            ))
+                                                            swipeOffsetY.snapTo(-height * 0.28f)
+                                                            swipeOffsetY.animateTo(0f, tween(SWIPE_IN_MS))
                                                         }
                                                         else -> swipeOffsetY.animateTo(0f, spring(
                                                             dampingRatio = Spring.DampingRatioMediumBouncy,
@@ -319,17 +316,21 @@ fun MediaGrid(
                             Modifier
                         },
                     )
-                    // Pinch with 2+ fingers only — does not consume single-finger scroll
-                    .pointerInput(columns) {
+                    // Pinch with 2+ fingers only — does not consume single-finger scroll.
+                    // Keyed on Unit so a column change mid-pinch doesn't restart the gesture;
+                    // the target is derived from the spread since the fingers went down, which
+                    // is what lets one continuous pinch cross several column counts.
+                    .pointerInput(Unit) {
                         awaitEachGesture {
                             awaitFirstDown(requireUnconsumed = false)
-                            var pastSlop = false
-                            var lastCentroidSize = 0f
+                            var startSpread = 0f
+                            var baseColumns = currentColumns
+                            var lastEmitted = currentColumns
                             do {
                                 val event = awaitPointerEvent(PointerEventPass.Main)
                                 val pressed = event.changes.filter { it.pressed }
                                 if (pressed.size >= 2) {
-                                    val centroidSize = pressed
+                                    val spread = pressed
                                         .map { it.position }
                                         .let { pts ->
                                             val c = Offset(
@@ -338,23 +339,28 @@ fun MediaGrid(
                                             )
                                             pts.map { (it - c).getDistance() }.average().toFloat()
                                         }
-                                    if (lastCentroidSize == 0f) {
-                                        lastCentroidSize = centroidSize
-                                    } else if (centroidSize > 0f && lastCentroidSize > 0f) {
-                                        val zoom = centroidSize / lastCentroidSize
-                                        if (abs(zoom - 1f) > 0.04f) {
-                                            pastSlop = true
-                                            onPinchColumns(zoom)
-                                            lastCentroidSize = centroidSize
+                                    if (startSpread <= 0f) {
+                                        startSpread = spread
+                                        baseColumns = currentColumns
+                                        lastEmitted = currentColumns
+                                    } else if (spread > 0f) {
+                                        // Fingers apart → bigger tiles → fewer columns.
+                                        val scale = spread / startSpread
+                                        val target = (baseColumns / scale)
+                                            .roundToInt()
+                                            .coerceIn(MIN_COLUMNS, MAX_COLUMNS)
+                                        if (target != lastEmitted) {
+                                            lastEmitted = target
+                                            setColumns(target)
                                         }
-                                    }
-                                    if (pastSlop) {
-                                        pressed.fastForEach {
-                                            if (it.positionChanged()) it.consume()
+                                        if (abs(scale - 1f) > 0.02f) {
+                                            pressed.fastForEach {
+                                                if (it.positionChanged()) it.consume()
+                                            }
                                         }
                                     }
                                 } else {
-                                    lastCentroidSize = 0f
+                                    startSpread = 0f
                                 }
                             } while (event.changes.fastAny { it.pressed })
                         }
@@ -400,22 +406,7 @@ private fun MediaGridCell(
     val placeholderColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f)
     val placeholder = remember(placeholderColor) { ColorPainter(placeholderColor) }
     val request = remember(item.uri, item.stableKey, thumbPx, item.mediaType) {
-        val cacheKey = ThumbSpec.thumbKey(item.stableKey, thumbPx)
-        ImageRequest.Builder(context)
-            .data(item.uri)
-            .size(Size(thumbPx, thumbPx))
-            .memoryCacheKey(cacheKey)
-            .diskCacheKey(cacheKey)
-            .memoryCachePolicy(CachePolicy.ENABLED)
-            .diskCachePolicy(CachePolicy.ENABLED)
-            .crossfade(true)
-            .apply {
-                if (item.mediaType == MediaType.VIDEO) {
-                    videoFrameMillis(0)
-                    preferVideoFrameEmbeddedThumbnailKey(true)
-                }
-            }
-            .build()
+        gridThumbRequest(context, item, thumbPx)
     }
     // Pre-toggle look: 6dp corners, no extra per-cell padding (gap comes from grid spacing).
     val shape = if (rounded) RoundedCornerShape(6.dp) else RoundedCornerShape(0.dp)
@@ -535,6 +526,34 @@ private fun MediaGridCell(
             else -> Unit
         }
     }
+}
+
+/**
+ * The exact request a grid cell will make. Shared so neighbouring random sets can be warmed
+ * with matching cache keys — prefetching under a different key would decode twice and still
+ * leave the grid blank on swipe.
+ */
+fun gridThumbRequest(
+    context: android.content.Context,
+    item: MediaItem,
+    thumbPx: Int,
+): ImageRequest {
+    val cacheKey = ThumbSpec.thumbKey(item.stableKey, thumbPx)
+    return ImageRequest.Builder(context)
+        .data(item.uri)
+        .size(Size(thumbPx, thumbPx))
+        .memoryCacheKey(cacheKey)
+        .diskCacheKey(cacheKey)
+        .memoryCachePolicy(CachePolicy.ENABLED)
+        .diskCachePolicy(CachePolicy.ENABLED)
+        .crossfade(true)
+        .apply {
+            if (item.mediaType == MediaType.VIDEO) {
+                videoFrameMillis(0)
+                preferVideoFrameEmbeddedThumbnailKey(true)
+            }
+        }
+        .build()
 }
 
 @Composable

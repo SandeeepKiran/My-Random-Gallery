@@ -23,6 +23,7 @@ import com.mousy.myrandomgallery.data.model.SnackMessage
 import com.mousy.myrandomgallery.data.model.ThemeMode
 import com.mousy.myrandomgallery.data.model.newShuffleSeed
 import com.mousy.myrandomgallery.data.model.sanitized
+import com.mousy.myrandomgallery.data.model.seededMixedSample
 import com.mousy.myrandomgallery.data.model.seededSample
 import com.mousy.myrandomgallery.data.preferences.SettingsRepository
 import kotlinx.coroutines.CancellationException
@@ -54,11 +55,21 @@ class GalleryViewModel(application: Application) : AndroidViewModel(application)
 
     private val _allMedia = MutableStateFlow<List<MediaItem>>(emptyList())
     private val _folderFavourites = MutableStateFlow<List<MediaItem>>(emptyList())
+
+    /** Favourites resolved from outside the selected folders (opt-in setting). */
+    private val _globalFavourites = MutableStateFlow<List<MediaItem>>(emptyList())
     private val _deletedKeys = MutableStateFlow<Set<String>>(emptySet())
     private val _discoveredFolders = MutableStateFlow<List<MediaRepository.FolderInfo>>(emptyList())
 
     /** Current random draw. One Long reproduces the whole gallery order (see [seededSample]). */
     private val _shuffleSeed = MutableStateFlow(newShuffleSeed())
+
+    /**
+     * Seeds of the sets a swipe will land on. The forward seed is decided *before* the swipe so
+     * its first page can be decoded in advance — that's what removes the blank gap on shuffle.
+     */
+    private val _prefetchSeeds = MutableStateFlow<List<Long>>(emptyList())
+    private var pendingForwardSeed = newShuffleSeed()
 
     /** How many items of the library the gallery prepares; grows as the user keeps browsing. */
     private val _sampleLimit = MutableStateFlow(SamplingDefaults.MIN_SAMPLE)
@@ -95,11 +106,17 @@ class GalleryViewModel(application: Application) : AndroidViewModel(application)
      */
     private val libraryState: StateFlow<LibraryState> = combine(
         _settings.map { it.toLibraryInputs() }.distinctUntilChanged(),
-        combine(_allMedia, _folderFavourites, _deletedKeys, _discoveredFolders) { media, favs, deleted, folders ->
-            LibrarySources(media, favs, deleted, folders)
+        combine(
+            _allMedia,
+            _folderFavourites,
+            _deletedKeys,
+            _discoveredFolders,
+            _globalFavourites,
+        ) { media, favs, deleted, folders, globalFavs ->
+            LibrarySources(media, favs, deleted, folders, globalFavs)
         },
-        combine(_shuffleSeed, _sampleLimit, _albumOpen) { seed, limit, album ->
-            SampleInputs(seed, limit, album)
+        combine(_shuffleSeed, _sampleLimit, _albumOpen, _prefetchSeeds) { seed, limit, album, prefetch ->
+            SampleInputs(seed, limit, album, prefetch)
         },
     ) { inputs, sources, sample ->
         buildLibraryState(inputs, sources, sample)
@@ -158,6 +175,7 @@ class GalleryViewModel(application: Application) : AndroidViewModel(application)
                 _discoveredFolders.value = mediaRepo.discoverFolders(s.hiddenFolders)
                 autoConfigureFileTypes(media, s)
                 refreshFolderFavourites(_settings.value)
+                refreshGlobalFavourites(_settings.value)
                 // File-type counts are a separate, cancellable pass (Settings-only data).
                 if (_settings.value.discoveredFileTypeCounts.isEmpty() && media.isNotEmpty()) {
                     refreshFileTypeCounts()
@@ -213,6 +231,28 @@ class GalleryViewModel(application: Application) : AndroidViewModel(application)
         }
     }
 
+    /**
+     * Resolves favourites that live outside the selected folders. Only the out-of-scope ones need
+     * a scan — favourites inside the selection already come from the normal library pass.
+     */
+    private suspend fun refreshGlobalFavourites(s: AppSettings = _settings.value) {
+        if (!s.showAllFavourites || s.favIds.isEmpty()) {
+            _globalFavourites.value = emptyList()
+            return
+        }
+        _globalFavourites.value = runCatching {
+            mediaRepo.scanFavouritesByKey(s.favIds, s.hiddenFolders)
+        }.getOrElse {
+            android.util.Log.e("GalleryVM", "All-folder favourites scan failed", it)
+            emptyList()
+        }
+    }
+
+    fun toggleShowAllFavourites() {
+        persistSettings { it.copy(showAllFavourites = !it.showAllFavourites) }
+        viewModelScope.launch { refreshGlobalFavourites() }
+    }
+
     private fun usesFavouritesFolder(s: AppSettings = _settings.value): Boolean =
         s.copyFavs && s.copyFavTreeUri.isNotBlank()
 
@@ -237,6 +277,7 @@ class GalleryViewModel(application: Application) : AndroidViewModel(application)
             seedIndex = s.shuffleSeedIndex.coerceIn(0, shuffleSeeds.lastIndex)
         }
         _shuffleSeed.value = shuffleSeeds[seedIndex]
+        updatePrefetchSeeds()
     }
 
     private fun persistShuffleSeeds() {
@@ -316,29 +357,41 @@ class GalleryViewModel(application: Application) : AndroidViewModel(application)
         it.copy(columns = if (it.columns >= 6) 1 else it.columns + 1)
     }
 
-    /** DEVICE-ONLY: Pinch gesture adjusts column count 1–6. */
-    fun adjustColumnsFromPinch(scale: Float) {
-        if (scale > 1.08f) persistSettings { it.copy(columns = (it.columns - 1).coerceAtLeast(1)) }
-        else if (scale < 0.92f) persistSettings { it.copy(columns = (it.columns + 1).coerceAtMost(6)) }
+    /** DEVICE-ONLY: Pinch gesture sets an absolute column count 1–6. */
+    fun setColumns(count: Int) {
+        val clamped = count.coerceIn(1, 6)
+        if (clamped == _settings.value.columns) return
+        persistSettings { it.copy(columns = clamped) }
     }
 
     fun shuffleGrid(direction: Int = 1) {
         if (shuffleSeeds.isEmpty()) {
-            shuffleSeeds += newShuffleSeed()
+            shuffleSeeds += pendingForwardSeed
+            pendingForwardSeed = newShuffleSeed()
             seedIndex = 0
         } else if (direction < 0 && seedIndex > 0) {
             // Swipe back → replay the previous random set from its seed.
             seedIndex--
+        } else if (seedIndex < shuffleSeeds.lastIndex) {
+            // Forward again after going back → replay the set we already generated.
+            seedIndex++
         } else {
-            while (shuffleSeeds.size > seedIndex + 1) {
-                shuffleSeeds.removeAt(shuffleSeeds.lastIndex)
-            }
-            shuffleSeeds += newShuffleSeed()
+            // The set we've been prefetching is the one we now show.
+            shuffleSeeds += pendingForwardSeed
+            pendingForwardSeed = newShuffleSeed()
             if (shuffleSeeds.size > MAX_SHUFFLE_HISTORY) shuffleSeeds.removeAt(0)
             seedIndex = shuffleSeeds.lastIndex
         }
         _shuffleSeed.value = shuffleSeeds[seedIndex]
+        updatePrefetchSeeds()
         persistShuffleSeeds()
+    }
+
+    /** Neighbouring seeds: whatever a forward swipe and a back swipe would show next. */
+    private fun updatePrefetchSeeds() {
+        val forward = shuffleSeeds.getOrNull(seedIndex + 1) ?: pendingForwardSeed
+        val back = shuffleSeeds.getOrNull(seedIndex - 1)
+        _prefetchSeeds.value = listOfNotNull(forward, back)
     }
 
     fun onGridSwipe(direction: Int) {
@@ -584,6 +637,8 @@ class GalleryViewModel(application: Application) : AndroidViewModel(application)
 
     private fun advanceSlideshowAfterVideo() {
         val v = _viewerUi.value
+        // A paused slideshow shouldn't jump forward just because the video ran out.
+        if (!v.playing) return
         if (v.keys.isEmpty()) {
             _viewerUi.update { it.copy(playing = false) }
             return
@@ -1209,7 +1264,7 @@ class GalleryViewModel(application: Application) : AndroidViewModel(application)
      */
     private fun persistViewingHabit() {
         val seen = sessionViewedKeys.size
-        if (seen <= 0) return
+        if (seen < SamplingDefaults.MIN_SESSION_FOR_AVERAGE) return
         val updated = SamplingDefaults.updatedAverage(sessionBaselineAvg, seen)
         if (kotlin.math.abs(updated - _settings.value.avgViewedPerSession) < 1f) return
         persistSettings { it.copy(avgViewedPerSession = updated) }
@@ -1279,9 +1334,32 @@ class GalleryViewModel(application: Application) : AndroidViewModel(application)
         // Favourites-folder copies win on key collisions, matching the previous lookup order.
         for (item in sources.folderFavourites) lookup[item.stableKey] = item
 
+        // Favourites are drawn from a separate pool so they land far more often than their
+        // share of the library would give them.
+        val favIds = inputs.favIds
+        val boosted = ArrayList<MediaItem>()
+        val regular = ArrayList<MediaItem>(playable.size)
+        for (item in playable) {
+            if (item.stableKey in favIds) boosted += item else regular += item
+        }
+
         val limit = sample.limit.coerceAtLeast(SamplingDefaults.MIN_SAMPLE)
-        val gallery = if (playable.size <= limit) playable else {
-            seededSample(playable, sample.seed, limit)
+        val gallery = seededMixedSample(
+            regular = regular,
+            boosted = boosted,
+            seed = sample.seed,
+            count = limit,
+            boostedRate = SamplingDefaults.FAVOURITE_RATE,
+        )
+        // Same draw, one page deep, for the sets a swipe will land on next.
+        val galleryPrefetch = sample.prefetchSeeds.flatMap { seed ->
+            seededMixedSample(
+                regular = regular,
+                boosted = boosted,
+                seed = seed,
+                count = SamplingDefaults.PREFETCH_PAGE,
+                boostedRate = SamplingDefaults.FAVOURITE_RATE,
+            )
         }
 
         val favWindow = inputs.favWindow
@@ -1293,9 +1371,14 @@ class GalleryViewModel(application: Application) : AndroidViewModel(application)
                         favWindow.matches(item.ageDays(now))
                 }
             } else {
-                val favIds = inputs.favIds
-                playable.filter { item ->
-                    item.stableKey in favIds &&
+                // "All folders" adds favourites living outside the current selection.
+                val pool = if (inputs.showAllFavourites) {
+                    (boosted + sources.globalFavourites).distinctBy { it.stableKey }
+                } else {
+                    boosted
+                }
+                pool.filter { item ->
+                    item.stableKey !in deleted &&
                         passFavType(item, inputs.favTypes) &&
                         favWindow.matches(item.ageDays(now))
                 }
@@ -1332,8 +1415,12 @@ class GalleryViewModel(application: Application) : AndroidViewModel(application)
             emptyList()
         }
 
+        // Favourites-folder copies aren't in the library scan, so make them resolvable.
+        for (item in sources.globalFavourites) lookup.putIfAbsent(item.stableKey, item)
+
         return LibraryState(
             gallery = gallery,
+            galleryPrefetch = galleryPrefetch,
             favourites = favourites,
             recent = recent,
             videos = videos,
@@ -1358,6 +1445,7 @@ class GalleryViewModel(application: Application) : AndroidViewModel(application)
         currentTab = shell.tab,
         visibleTabs = settings.tabOrder.filter { it !in settings.tabHidden },
         gallery = library.gallery,
+        galleryPrefetch = library.galleryPrefetch,
         favourites = library.favourites,
         recent = library.recent,
         videos = library.videos,
@@ -1406,6 +1494,7 @@ class GalleryViewModel(application: Application) : AndroidViewModel(application)
         recentTypes = recentTypes,
         copyFavs = copyFavs,
         copyFavTreeUri = copyFavTreeUri,
+        showAllFavourites = showAllFavourites,
         selectedFolders = selectedFolders,
         safTreeUris = safTreeUris,
     )
@@ -1430,6 +1519,7 @@ class GalleryViewModel(application: Application) : AndroidViewModel(application)
         val recentTypes: FileTypeFilter = FileTypeFilter(),
         val copyFavs: Boolean = false,
         val copyFavTreeUri: String = "",
+        val showAllFavourites: Boolean = false,
         val selectedFolders: Set<String> = emptySet(),
         val safTreeUris: Set<String> = emptySet(),
     )
@@ -1439,16 +1529,19 @@ class GalleryViewModel(application: Application) : AndroidViewModel(application)
         val folderFavourites: List<MediaItem>,
         val deleted: Set<String>,
         val discovered: List<MediaRepository.FolderInfo>,
+        val globalFavourites: List<MediaItem>,
     )
 
     private data class SampleInputs(
         val seed: Long,
         val limit: Int,
         val albumOpen: String?,
+        val prefetchSeeds: List<Long> = emptyList(),
     )
 
     private data class LibraryState(
         val gallery: List<MediaItem> = emptyList(),
+        val galleryPrefetch: List<MediaItem> = emptyList(),
         val favourites: List<MediaItem> = emptyList(),
         val recent: List<MediaItem> = emptyList(),
         val videos: List<MediaItem> = emptyList(),
@@ -1519,6 +1612,8 @@ data class GalleryUiState(
     val currentTab: AppTab = AppTab.GALLERY,
     val visibleTabs: List<AppTab> = AppTab.defaultOrder.filter { it !in AppTab.defaultHidden },
     val gallery: List<MediaItem> = emptyList(),
+    /** First page of the neighbouring random sets, decoded ahead of a swipe. */
+    val galleryPrefetch: List<MediaItem> = emptyList(),
     val favourites: List<MediaItem> = emptyList(),
     val recent: List<MediaItem> = emptyList(),
     val videos: List<MediaItem> = emptyList(),

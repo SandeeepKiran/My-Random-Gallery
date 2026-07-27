@@ -72,6 +72,7 @@ fun SettingsScreen(
     onToggleFileType: (String) -> Unit,
     onToggleBehaviour: (String) -> Unit,
     onToggleCopyFavs: () -> Unit,
+    onToggleShowAllFavourites: () -> Unit,
     onChooseFavFolder: () -> Unit,
     onOpenHiddenFolders: () -> Unit,
     onExportSettings: () -> Unit,
@@ -344,6 +345,13 @@ fun SettingsScreen(
 
         SectionTitle("Storage & Data")
         SettingsGroup {
+            ToggleRow(
+                label = "Favourites from all folders",
+                checked = settings.showAllFavourites,
+                subtitle = "Show favourited media even when its folder isn't selected as a source.",
+                onToggle = onToggleShowAllFavourites,
+            )
+            HorizontalDivider()
             ActionRow(Icons.Default.FolderCopy, "Favourites folder", "Auto copy/remove favourites", settings.copyFavs, onToggleCopyFavs)
             if (settings.copyFavs) {
                 Row(
