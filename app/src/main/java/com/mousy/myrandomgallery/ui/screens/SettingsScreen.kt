@@ -24,12 +24,10 @@ import androidx.compose.material.icons.filled.FileDownload
 import androidx.compose.material.icons.filled.FolderCopy
 import androidx.compose.material.icons.filled.FolderSpecial
 import androidx.compose.material.icons.filled.IosShare
-import androidx.compose.material.icons.filled.PhotoAlbum
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.filled.Swipe
 import androidx.compose.material.icons.filled.TouchApp
-import androidx.compose.material.icons.filled.VideoLibrary
 import androidx.compose.material.icons.filled.ZoomIn
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.HorizontalDivider
@@ -44,6 +42,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import com.mousy.myrandomgallery.data.media.MediaRepository
 import com.mousy.myrandomgallery.data.model.AccentColor
@@ -60,8 +59,6 @@ fun SettingsScreen(
     onToggleDark: () -> Unit,
     onToggleAmoled: () -> Unit,
     onSetAccent: (AccentColor) -> Unit,
-    onToggleMvFeature: () -> Unit,
-    onToggleAlbumFeature: () -> Unit,
     onMoveTab: (AppTab, Int) -> Unit,
     onToggleTabVisibility: (AppTab) -> Unit,
     onToggleFolder: (String) -> Unit,
@@ -90,16 +87,34 @@ fun SettingsScreen(
             "My Random Gallery",
             style = MaterialTheme.typography.headlineMedium,
             color = MaterialTheme.colorScheme.primary,
+            textAlign = TextAlign.Center,
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(bottom = 16.dp),
         )
 
         hints.forEach { (icon, text) ->
-            Surface(shape = MaterialTheme.shapes.large, tonalElevation = 1.dp, modifier = Modifier.padding(bottom = 8.dp)) {
-                Row(modifier = Modifier.padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
+            Surface(
+                shape = MaterialTheme.shapes.large,
+                tonalElevation = 1.dp,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(bottom = 8.dp),
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(14.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.Center,
+                ) {
                     Icon(icon, null, tint = MaterialTheme.colorScheme.primary)
-                    Text(text, modifier = Modifier.padding(start = 14.dp), color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text(
+                        text,
+                        modifier = Modifier.padding(start = 14.dp),
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        textAlign = TextAlign.Center,
+                    )
                 }
             }
         }
@@ -225,13 +240,8 @@ fun SettingsScreen(
         }
 
         SectionTitle("Tabs & Layout")
-        SettingsGroup {
-            ToggleRow("Multi-Video tab", settings.tabFeatures.multivideo, onToggleMvFeature, leading = Icons.Default.VideoLibrary)
-            HorizontalDivider()
-            ToggleRow("Album tab", settings.tabFeatures.album, onToggleAlbumFeature, leading = Icons.Default.PhotoAlbum)
-        }
         Text(
-            "Reorder the bottom bar and choose which tabs appear. Gallery is always shown.",
+            "Reorder the bottom bar and choose which tabs appear. Gallery and More are always shown. Multi-Video and Albums are off by default.",
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.padding(vertical = 8.dp),
@@ -293,7 +303,10 @@ fun SettingsScreen(
             "Help us to grow and to bring new and improved features to My Random Gallery!",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.padding(vertical = 12.dp),
+            textAlign = TextAlign.Center,
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(vertical = 12.dp),
         )
 
         Row(
@@ -310,6 +323,7 @@ fun SettingsScreen(
             "Made with ❤️ by Sandeep Kiran (Mousy)",
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
+            textAlign = TextAlign.Center,
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(bottom = 24.dp),

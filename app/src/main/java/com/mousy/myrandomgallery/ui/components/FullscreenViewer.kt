@@ -1,19 +1,33 @@
 package com.mousy.myrandomgallery.ui.components
 
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideOutHorizontally
+import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.calculatePan
 import androidx.compose.foundation.gestures.calculateZoom
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Favorite
+import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
@@ -29,8 +43,8 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -61,6 +75,8 @@ import java.util.Date
 import java.util.Locale
 import kotlin.math.abs
 
+private val MenuShape = RoundedCornerShape(20.dp)
+
 /** DEVICE-ONLY: Fullscreen viewer with ExoPlayer for video and swipe / pinch-zoom for images. */
 @Composable
 fun FullscreenViewer(
@@ -90,27 +106,54 @@ fun FullscreenViewer(
     onDetails: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    var navDirection by remember { mutableIntStateOf(0) }
+
     Box(
         modifier = modifier
             .fillMaxSize()
             .background(Color.Black),
     ) {
-        // Key the entire media surface on stable identity so swipe always swaps content.
-        key(item?.stableKey ?: "empty") {
-            when (item?.mediaType) {
+        AnimatedContent(
+            targetState = item,
+            transitionSpec = {
+                val dir = navDirection
+                if (dir == 0) {
+                    fadeIn(tween(160)) togetherWith fadeOut(tween(120))
+                } else {
+                    val enter = slideInHorizontally(
+                        animationSpec = tween(280),
+                        initialOffsetX = { full -> if (dir > 0) full else -full },
+                    ) + fadeIn(tween(200))
+                    val exit = slideOutHorizontally(
+                        animationSpec = tween(240),
+                        targetOffsetX = { full -> if (dir > 0) -full / 3 else full / 3 },
+                    ) + fadeOut(tween(180))
+                    enter togetherWith exit
+                }
+            },
+            label = "viewerPage",
+            modifier = Modifier.fillMaxSize(),
+        ) { pageItem ->
+            when (pageItem?.mediaType) {
                 MediaType.VIDEO -> VideoPlayerSurface(
-                    item = item,
+                    item = pageItem,
                     isPlaying = isPlaying,
                     onToggleChrome = onToggleChrome,
-                    onNavigate = onNavigate,
+                    onNavigate = { delta ->
+                        navDirection = delta
+                        onNavigate(delta)
+                    },
                     onSwipeUpDelete = onSwipeUpDelete,
                     disableSwipeDelete = disableSwipeDelete,
                 )
                 null -> Unit
                 else -> ZoomableImageSurface(
-                    item = item,
+                    item = pageItem,
                     onToggleChrome = onToggleChrome,
-                    onNavigate = onNavigate,
+                    onNavigate = { delta ->
+                        navDirection = delta
+                        onNavigate(delta)
+                    },
                     onSwipeUpDelete = onSwipeUpDelete,
                     disableSwipeDelete = disableSwipeDelete,
                 )
@@ -122,7 +165,7 @@ fun FullscreenViewer(
                 modifier = Modifier
                     .fillMaxWidth()
                     .background(Brush.verticalGradient(listOf(Color.Black.copy(0.6f), Color.Transparent)))
-                    .padding(horizontal = 6.dp, vertical = 14.dp)
+                    .padding(horizontal = 4.dp, vertical = 10.dp)
                     .align(Alignment.TopCenter),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
@@ -134,6 +177,7 @@ fun FullscreenViewer(
                     color = Color.White,
                     style = MaterialTheme.typography.titleMedium,
                     modifier = Modifier.weight(1f),
+                    maxLines = 1,
                 )
                 IconButton(onClick = onTogglePlay) {
                     Icon(
@@ -142,15 +186,23 @@ fun FullscreenViewer(
                         tint = Color.White,
                     )
                 }
-                IconButton(onClick = onToggleSpeedMenu) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Icon(Icons.Default.Speed, null, tint = Color.White)
-                        Text(
-                            speedLabel(speedIndex, customMs),
-                            color = Color.White,
-                            style = MaterialTheme.typography.labelMedium,
-                        )
-                    }
+                // Speed control: icon + label outside IconButton so "Off" isn't clipped
+                Row(
+                    modifier = Modifier
+                        .heightIn(min = 48.dp)
+                        .widthIn(min = 56.dp)
+                        .clickable(onClick = onToggleSpeedMenu)
+                        .padding(horizontal = 8.dp, vertical = 10.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Icon(Icons.Default.Speed, null, tint = Color.White)
+                    Text(
+                        speedLabel(speedIndex, customMs),
+                        color = Color.White,
+                        style = MaterialTheme.typography.labelMedium,
+                        modifier = Modifier.padding(start = 4.dp),
+                        maxLines = 1,
+                    )
                 }
                 IconButton(onClick = onToggleFavourite) {
                     Icon(
@@ -165,8 +217,16 @@ fun FullscreenViewer(
             }
         }
 
-        Box(Modifier.align(Alignment.TopEnd)) {
-            DropdownMenu(expanded = menuOpen, onDismissRequest = onToggleMenu) {
+        Box(
+            modifier = Modifier
+                .align(Alignment.TopEnd)
+                .padding(top = 56.dp, end = 8.dp),
+        ) {
+            DropdownMenu(
+                expanded = menuOpen,
+                onDismissRequest = onToggleMenu,
+                shape = MenuShape,
+            ) {
                 DropdownMenuItem(
                     text = { Text("Share") },
                     leadingIcon = { Icon(Icons.Default.Share, null) },
@@ -174,6 +234,7 @@ fun FullscreenViewer(
                 )
                 DropdownMenuItem(
                     text = { Text("Delete") },
+                    leadingIcon = { Icon(Icons.Default.Delete, null) },
                     enabled = deleteEnabled,
                     onClick = {
                         if (deleteEnabled) {
@@ -184,17 +245,33 @@ fun FullscreenViewer(
                 )
                 DropdownMenuItem(
                     text = { Text("Details") },
+                    leadingIcon = { Icon(Icons.Default.Info, null) },
                     onClick = { onDetails(); onToggleMenu() },
                 )
             }
         }
 
-        Box(Modifier.align(Alignment.Center)) {
-            DropdownMenu(expanded = speedMenuOpen, onDismissRequest = onToggleSpeedMenu) {
+        Box(modifier = Modifier.align(Alignment.Center)) {
+            DropdownMenu(
+                expanded = speedMenuOpen,
+                onDismissRequest = onToggleSpeedMenu,
+                shape = MenuShape,
+            ) {
                 SlideshowSpeeds.speeds.forEachIndexed { i, speed ->
                     DropdownMenuItem(
-                        text = { Text(if (i == SlideshowSpeeds.CUSTOM_INDEX) "Custom…" else speed.label) },
+                        text = {
+                            Text(
+                                if (i == SlideshowSpeeds.CUSTOM_INDEX) {
+                                    "Custom…"
+                                } else if (i == SlideshowSpeeds.OFF_INDEX) {
+                                    "Off"
+                                } else {
+                                    speed.label
+                                },
+                            )
+                        },
                         onClick = { onSpeedSelected(i) },
+                        contentPadding = PaddingValues(horizontal = 16.dp, vertical = 4.dp),
                     )
                 }
             }
@@ -293,8 +370,9 @@ private fun ZoomableImageSurface(
                         val absX = abs(totalPan.x)
                         val absY = abs(totalPan.y)
                         when {
-                            absX > 50f && absX > absY -> onNavigate(if (totalPan.x < 0) 1 else -1)
-                            absY > 80f && absY > absX && totalPan.y < 0 && !disableSwipeDelete ->
+                            absX > 72f && absX > absY * 1.15f ->
+                                onNavigate(if (totalPan.x < 0) 1 else -1)
+                            absY > 100f && absY > absX && totalPan.y < 0 && !disableSwipeDelete ->
                                 onSwipeUpDelete()
                         }
                     }
@@ -367,8 +445,9 @@ private fun VideoPlayerSurface(
                     val absX = abs(totalPan.x)
                     val absY = abs(totalPan.y)
                     when {
-                        absX > 50f && absX > absY -> onNavigate(if (totalPan.x < 0) 1 else -1)
-                        absY > 80f && absY > absX && totalPan.y < 0 && !disableSwipeDelete ->
+                        absX > 72f && absX > absY * 1.15f ->
+                            onNavigate(if (totalPan.x < 0) 1 else -1)
+                        absY > 100f && absY > absX && totalPan.y < 0 && !disableSwipeDelete ->
                             onSwipeUpDelete()
                     }
                 }

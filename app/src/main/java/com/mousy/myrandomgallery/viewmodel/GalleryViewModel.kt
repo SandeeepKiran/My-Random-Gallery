@@ -593,13 +593,19 @@ class GalleryViewModel(application: Application) : AndroidViewModel(application)
     }
 
     fun cycleRecentWindow() {
-        val windows = SlideshowSpeeds.recentWindows
-        val current = _settings.value.recentWindowDays
-        val idx = windows.indexOf(current).coerceAtLeast(0)
-        persistSettings { it.copy(recentWindowDays = windows[(idx + 1) % windows.size]) }
+        // Kept for compatibility; Recents now uses the shared list window.
+        setListWindow(FavWindow.cycle(_settings.value.favWindow))
     }
 
-    fun cycleFavWindow() = persistSettings { it.copy(favWindow = FavWindow.cycle(it.favWindow)) }
+    fun cycleFavWindow() = setListWindow(FavWindow.cycle(_settings.value.favWindow))
+
+    /** Shared date window for Favourites + Recents (fixes brittle cycle-to-365 path). */
+    fun setListWindow(window: FavWindow) = persistSettings { s ->
+        s.copy(
+            favWindow = window,
+            recentWindowDays = window.asRecentDays() ?: 365,
+        )
+    }
 
     fun toggleFavType(key: String) {
         persistSettings { s ->
@@ -610,7 +616,9 @@ class GalleryViewModel(application: Application) : AndroidViewModel(application)
                 "gif" -> ft.copy(gif = !ft.gif)
                 else -> ft
             }
-            s.copy(favTypes = updated)
+            // Keep at least one type enabled to avoid empty-filter confusion
+            val safe = if (!updated.photo && !updated.video && !updated.gif) ft else updated
+            s.copy(favTypes = safe)
         }
     }
 
@@ -707,45 +715,28 @@ class GalleryViewModel(application: Application) : AndroidViewModel(application)
         if (tab.locked) return
         persistSettings { s ->
             val hidden = s.tabHidden.toMutableSet()
-            if (hidden.contains(tab)) hidden.remove(tab) else hidden.add(tab)
-            s.copy(tabHidden = hidden)
+            val enabling = hidden.contains(tab)
+            if (enabling) hidden.remove(tab) else hidden.add(tab)
+            val order = s.tabOrder.toMutableList()
+            if (enabling && tab !in order) {
+                val si = order.indexOf(AppTab.SETTINGS)
+                order.add(if (si >= 0) si else order.size, tab)
+            }
+            val features = when (tab) {
+                AppTab.MULTIVIDEO -> s.tabFeatures.copy(multivideo = enabling)
+                AppTab.ALBUM -> s.tabFeatures.copy(album = enabling)
+                else -> s.tabFeatures
+            }
+            if (!enabling && _currentTab.value == tab) {
+                _currentTab.value = AppTab.GALLERY
+            }
+            s.copy(tabHidden = hidden, tabOrder = order, tabFeatures = features)
         }
     }
 
-    fun toggleMultiVideoFeature() = persistSettings { s ->
-        val on = !s.tabFeatures.multivideo
-        var order = s.tabOrder.toMutableList()
-        val hidden = s.tabHidden.toMutableSet()
-        if (on) {
-            if (AppTab.MULTIVIDEO !in order) {
-                val si = order.indexOf(AppTab.SLIDESHOW)
-                order.add(if (si >= 0) si + 1 else order.size, AppTab.MULTIVIDEO)
-            }
-        } else {
-            order.remove(AppTab.MULTIVIDEO)
-            hidden.remove(AppTab.MULTIVIDEO)
-            if (_currentTab.value == AppTab.MULTIVIDEO) _currentTab.value = AppTab.GALLERY
-        }
-        s.copy(tabFeatures = s.tabFeatures.copy(multivideo = on), tabOrder = order, tabHidden = hidden)
-    }
+    fun toggleMultiVideoFeature() = toggleTabVisibility(AppTab.MULTIVIDEO)
 
-    fun toggleAlbumFeature() = persistSettings { s ->
-        val on = !s.tabFeatures.album
-        var order = s.tabOrder.toMutableList()
-        val hidden = s.tabHidden.toMutableSet()
-        if (on) {
-            if (AppTab.ALBUM !in order) {
-                var ai = order.indexOf(AppTab.MULTIVIDEO)
-                if (ai < 0) ai = order.indexOf(AppTab.SLIDESHOW)
-                order.add(if (ai >= 0) ai + 1 else order.size, AppTab.ALBUM)
-            }
-        } else {
-            order.remove(AppTab.ALBUM)
-            hidden.remove(AppTab.ALBUM)
-            if (_currentTab.value == AppTab.ALBUM) _currentTab.value = AppTab.GALLERY
-        }
-        s.copy(tabFeatures = s.tabFeatures.copy(album = on), tabOrder = order, tabHidden = hidden)
-    }
+    fun toggleAlbumFeature() = toggleTabVisibility(AppTab.ALBUM)
 
     fun openAlbum(path: String) {
         _albumOpen.value = path
@@ -1115,7 +1106,11 @@ class GalleryViewModel(application: Application) : AndroidViewModel(application)
             }
         }
         val recent = liveKeys.mapNotNull { mediaMap[it] }
-            .filter { it.ageDays() <= settings.recentWindowDays && passType(it, settings) }
+            .filter { item ->
+                passType(item, settings) &&
+                    passFavType(item, settings.favTypes) &&
+                    settings.favWindow.matches(item.ageDays())
+            }
             .sortedBy { it.ageDays() }
         val videos = allMedia.filter { it.mediaType == MediaType.VIDEO && passType(it, settings) }
         val selectedNormalized = MediaRepository.mediaStoreFolderKeys(settings.selectedFolders)
@@ -1133,11 +1128,7 @@ class GalleryViewModel(application: Application) : AndroidViewModel(application)
         val viewerLive = viewerList.filter { it !in deleted }
         val viewerItem = viewerLive.getOrNull(viewerIndex)?.let { lookup[it] }
 
-        val visibleTabs = settings.tabOrder.filter { tab ->
-            tab !in settings.tabHidden &&
-                (tab != AppTab.MULTIVIDEO || settings.tabFeatures.multivideo) &&
-                (tab != AppTab.ALBUM || settings.tabFeatures.album)
-        }
+        val visibleTabs = settings.tabOrder.filter { tab -> tab !in settings.tabHidden }
 
         return GalleryUiState(
             settings = settings,
@@ -1188,7 +1179,7 @@ class GalleryViewModel(application: Application) : AndroidViewModel(application)
 data class GalleryUiState(
     val settings: AppSettings = AppSettings(),
     val currentTab: AppTab = AppTab.GALLERY,
-    val visibleTabs: List<AppTab> = AppTab.defaultOrder,
+    val visibleTabs: List<AppTab> = AppTab.defaultOrder.filter { it !in AppTab.defaultHidden },
     val gallery: List<MediaItem> = emptyList(),
     val favourites: List<MediaItem> = emptyList(),
     val recent: List<MediaItem> = emptyList(),

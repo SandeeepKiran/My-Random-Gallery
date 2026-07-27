@@ -1,21 +1,14 @@
 package com.mousy.myrandomgallery.ui.screens
 
-import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.CalendarMonth
 import androidx.compose.material.icons.filled.Favorite
-import androidx.compose.material.icons.filled.FilterList
-import androidx.compose.material3.DropdownMenu
-import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -24,9 +17,11 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import com.mousy.myrandomgallery.data.model.FavWindow
 import com.mousy.myrandomgallery.data.model.FileTypeFilter
+import com.mousy.myrandomgallery.data.model.GridMode
 import com.mousy.myrandomgallery.data.model.MediaItem
 import com.mousy.myrandomgallery.ui.components.EmptyFoldersState
 import com.mousy.myrandomgallery.ui.components.MediaGrid
+import com.mousy.myrandomgallery.ui.components.MediaListFilterBar
 
 @Composable
 fun FavouritesScreen(
@@ -40,7 +35,7 @@ fun FavouritesScreen(
     favTypeMenuOpen: Boolean,
     onToggleFavTypeMenu: () -> Unit,
     onToggleFavType: (String) -> Unit,
-    onCycleFavWindow: () -> Unit,
+    onSelectFavWindow: (FavWindow) -> Unit,
     onItemClick: (MediaItem) -> Unit,
     onItemDoubleTap: (MediaItem) -> Unit,
     onItemLongPress: (MediaItem) -> Unit,
@@ -49,29 +44,15 @@ fun FavouritesScreen(
     modifier: Modifier = Modifier,
 ) {
     Column(modifier = modifier.fillMaxSize()) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 12.dp, vertical = 14.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Text("Favourites", style = MaterialTheme.typography.headlineSmall, modifier = Modifier.weight(1f))
-            Box {
-                OutlinedButton(onClick = onToggleFavTypeMenu) {
-                    Icon(Icons.Default.FilterList, null, modifier = Modifier.size(18.dp))
-                    Text(favTypeLabel(favTypes), modifier = Modifier.padding(start = 4.dp))
-                }
-                DropdownMenu(expanded = favTypeMenuOpen, onDismissRequest = onToggleFavTypeMenu) {
-                    DropdownMenuItem(text = { Text("Photos") }, onClick = { onToggleFavType("photo") })
-                    DropdownMenuItem(text = { Text("Videos") }, onClick = { onToggleFavType("video") })
-                    DropdownMenuItem(text = { Text("GIFs") }, onClick = { onToggleFavType("gif") })
-                }
-            }
-            OutlinedButton(onClick = onCycleFavWindow, modifier = Modifier.padding(start = 6.dp)) {
-                Icon(Icons.Default.CalendarMonth, null, modifier = Modifier.size(18.dp))
-                Text(favWindow.label(), modifier = Modifier.padding(start = 4.dp))
-            }
-        }
+        MediaListFilterBar(
+            title = "Favourites",
+            types = favTypes,
+            window = favWindow,
+            typeMenuOpen = favTypeMenuOpen,
+            onToggleTypeMenu = onToggleFavTypeMenu,
+            onToggleType = onToggleFavType,
+            onSelectWindow = onSelectFavWindow,
+        )
 
         when {
             noFolders -> EmptyFoldersState(onChooseFolders = onGoSettings)
@@ -101,7 +82,7 @@ fun FavouritesScreen(
             else -> MediaGrid(
                 items = items,
                 columns = columns,
-                gridMode = com.mousy.myrandomgallery.data.model.GridMode.SCROLL,
+                gridMode = GridMode.SCROLL,
                 favouriteKeys = favouriteKeys,
                 selectedKeys = selectedKeys,
                 onItemClick = onItemClick,
@@ -109,12 +90,8 @@ fun FavouritesScreen(
                 onItemLongPress = onItemLongPress,
                 onSwipeShuffle = {},
                 onPinchColumns = onPinchColumns,
+                modifier = Modifier.weight(1f),
             )
         }
     }
-}
-
-private fun favTypeLabel(filter: FileTypeFilter): String {
-    val count = listOf(filter.photo, filter.video, filter.gif).count { it }
-    return if (count == 3) "All types" else "$count types"
 }

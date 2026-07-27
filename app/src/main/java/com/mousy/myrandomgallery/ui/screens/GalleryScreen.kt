@@ -88,6 +88,7 @@ fun GalleryScreen(
                     onItemLongPress = onItemLongPress,
                     onSwipeShuffle = onSwipeShuffle,
                     onPinchColumns = onPinchColumns,
+                    modifier = Modifier.weight(1f),
                 )
                 Text(
                     text = if (gridMode == GridMode.SWIPE) {

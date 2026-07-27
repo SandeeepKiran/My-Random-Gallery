@@ -1,0 +1,101 @@
+package com.mousy.myrandomgallery.ui.components
+
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.CalendarMonth
+import androidx.compose.material.icons.filled.FilterList
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.Icon
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.unit.dp
+import com.mousy.myrandomgallery.data.model.FavWindow
+import com.mousy.myrandomgallery.data.model.FileTypeFilter
+
+/**
+ * Shared type + date filter bar for Recents and Favourites.
+ * Both screens bind to the same preferences so filters stay in sync.
+ */
+@Composable
+fun MediaListFilterBar(
+    title: String,
+    types: FileTypeFilter,
+    window: FavWindow,
+    typeMenuOpen: Boolean,
+    onToggleTypeMenu: () -> Unit,
+    onToggleType: (String) -> Unit,
+    onSelectWindow: (FavWindow) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    var dateMenuOpen by remember { mutableStateOf(false) }
+
+    Row(
+        modifier = modifier
+            .fillMaxWidth()
+            .padding(horizontal = 12.dp, vertical = 14.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(title, style = MaterialTheme.typography.headlineSmall, modifier = Modifier.weight(1f))
+        Box {
+            OutlinedButton(onClick = onToggleTypeMenu) {
+                Icon(Icons.Default.FilterList, null, modifier = Modifier.size(18.dp))
+                Text(typeFilterLabel(types), modifier = Modifier.padding(start = 4.dp))
+            }
+            DropdownMenu(expanded = typeMenuOpen, onDismissRequest = onToggleTypeMenu) {
+                DropdownMenuItem(
+                    text = { Text("Photos") },
+                    trailingIcon = { if (types.photo) Text("✓") },
+                    onClick = { onToggleType("photo") },
+                )
+                DropdownMenuItem(
+                    text = { Text("Videos") },
+                    trailingIcon = { if (types.video) Text("✓") },
+                    onClick = { onToggleType("video") },
+                )
+                DropdownMenuItem(
+                    text = { Text("GIFs") },
+                    trailingIcon = { if (types.gif) Text("✓") },
+                    onClick = { onToggleType("gif") },
+                )
+            }
+        }
+        Box(modifier = Modifier.padding(start = 6.dp)) {
+            OutlinedButton(onClick = { dateMenuOpen = true }) {
+                Icon(Icons.Default.CalendarMonth, null, modifier = Modifier.size(18.dp))
+                Text(window.shortLabel(), modifier = Modifier.padding(start = 4.dp))
+            }
+            DropdownMenu(expanded = dateMenuOpen, onDismissRequest = { dateMenuOpen = false }) {
+                FavWindow.options.forEach { option ->
+                    DropdownMenuItem(
+                        text = { Text(option.label()) },
+                        trailingIcon = {
+                            if (option.sameAs(window)) Text("✓")
+                        },
+                        onClick = {
+                            dateMenuOpen = false
+                            onSelectWindow(option)
+                        },
+                    )
+                }
+            }
+        }
+    }
+}
+
+fun typeFilterLabel(filter: FileTypeFilter): String {
+    val count = listOf(filter.photo, filter.video, filter.gif).count { it }
+    return if (count == 3) "All types" else "$count types"
+}

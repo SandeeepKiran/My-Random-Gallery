@@ -87,6 +87,7 @@ fun AlbumsScreen(
                     onItemLongPress = onItemLongPress,
                     onSwipeShuffle = {},
                     onPinchColumns = onPinchColumns,
+                    modifier = Modifier.weight(1f),
                 )
             }
         }

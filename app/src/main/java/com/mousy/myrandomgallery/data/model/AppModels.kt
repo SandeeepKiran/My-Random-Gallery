@@ -25,7 +25,13 @@ enum class AppTab(val label: String, val icon: ImageVector, val locked: Boolean 
     companion object {
         fun fromKey(key: String): AppTab? = entries.find { it.key == key }
 
-        val defaultOrder: List<AppTab> = listOf(FAV, RECENT, GALLERY, SLIDESHOW, SETTINGS)
+        /** Full tab strip including optional Multi-Video / Album (hidden by default). */
+        val defaultOrder: List<AppTab> = listOf(
+            FAV, RECENT, GALLERY, SLIDESHOW, MULTIVIDEO, ALBUM, SETTINGS,
+        )
+
+        /** Optional tabs start unchecked in Settings tab-order UI. */
+        val defaultHidden: Set<AppTab> = setOf(MULTIVIDEO, ALBUM)
     }
 }
 
@@ -107,11 +113,14 @@ data class AppSettings(
     val hiddenFolders: Map<String, Boolean> = defaultHiddenFolders(),
     val tabFeatures: TabFeatures = TabFeatures(),
     val tabOrder: List<AppTab> = AppTab.defaultOrder,
-    val tabHidden: Set<AppTab> = emptySet(),
+    val tabHidden: Set<AppTab> = AppTab.defaultHidden,
     val speedIdx: Int = 2,
     val customMs: Long = 8_000L,
+    /** Kept in sync with [favWindow] day windows for Recents. */
     val recentWindowDays: Int = 30,
+    /** Shared date window for Favourites and Recents. */
     val favWindow: FavWindow = FavWindow.ALL,
+    /** Shared media-type filter for Favourites and Recents. */
     val favTypes: FileTypeFilter = FileTypeFilter(),
 ) {
     companion object {
@@ -130,7 +139,19 @@ sealed class FavWindow {
 
     fun label(): String = when (this) {
         ALL -> "All time"
-        is Days -> "$days Days"
+        is Days -> when (days) {
+            365 -> "1 year"
+            else -> "$days days"
+        }
+    }
+
+    /** Compact label for filter buttons (avoids overflow on narrow screens). */
+    fun shortLabel(): String = when (this) {
+        ALL -> "All time"
+        is Days -> when (days) {
+            365 -> "1y"
+            else -> "${days}d"
+        }
     }
 
     fun matches(ageDays: Int): Boolean = when (this) {
@@ -138,13 +159,32 @@ sealed class FavWindow {
         is Days -> ageDays <= days
     }
 
+    fun sameAs(other: FavWindow): Boolean = when (this) {
+        ALL -> other is ALL
+        is Days -> other is Days && other.days == days
+    }
+
+    /** Day count for Recents sync; null means "all time". */
+    fun asRecentDays(): Int? = when (this) {
+        ALL -> null
+        is Days -> days
+    }
+
     companion object {
         val options: List<FavWindow> = listOf(
             ALL, Days(7), Days(14), Days(30), Days(60), Days(90), Days(365),
         )
 
+        fun fromRecentDays(days: Int): FavWindow =
+            options.filterIsInstance<Days>().find { it.days == days } ?: Days(days.coerceAtLeast(1))
+
         fun cycle(current: FavWindow): FavWindow {
-            val idx = options.indexOf(current).coerceAtLeast(0)
+            // Compare by value (not list identity) so Days(365) always resolves correctly.
+            val idx = when (current) {
+                ALL -> 0
+                is Days -> options.indexOfFirst { it is Days && it.days == current.days }
+                    .takeIf { it >= 0 } ?: 0
+            }
             return options[(idx + 1) % options.size]
         }
     }

@@ -24,7 +24,14 @@ data class MediaItem(
     val stableKey: String get() = "${id}_${uri}"
 
     fun ageDays(nowMs: Long = System.currentTimeMillis()): Int {
-        val ref = if (dateAddedMs > 0) dateAddedMs else dateTakenMs
-        return ((nowMs - ref) / 86_400_000L).toInt().coerceAtLeast(0)
+        val ref = when {
+            dateAddedMs > 0L -> dateAddedMs
+            dateTakenMs > 0L -> dateTakenMs
+            else -> return Int.MAX_VALUE / 4 // unknown date → fail closed for day filters
+        }
+        val diffMs = (nowMs - ref).coerceAtLeast(0L)
+        val days = diffMs / 86_400_000L
+        // Guard against toInt() overflow on pathological timestamps
+        return days.coerceIn(0L, Int.MAX_VALUE.toLong()).toInt()
     }
 }

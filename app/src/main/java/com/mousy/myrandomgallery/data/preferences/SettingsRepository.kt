@@ -16,6 +16,7 @@ import com.mousy.myrandomgallery.data.model.AppTab
 import com.mousy.myrandomgallery.data.model.FavWindow
 import com.mousy.myrandomgallery.data.model.FileTypeFilter
 import com.mousy.myrandomgallery.data.model.GridMode
+import com.mousy.myrandomgallery.data.model.SlideshowSpeeds
 import com.mousy.myrandomgallery.data.model.TabFeatures
 import com.mousy.myrandomgallery.data.model.ThemeMode
 import kotlinx.coroutines.flow.Flow
@@ -26,39 +27,7 @@ private val Context.dataStore: DataStore<Preferences> by preferencesDataStore(na
 class SettingsRepository(private val context: Context) {
 
     val settingsFlow: Flow<AppSettings> = context.dataStore.data.map { prefs ->
-        AppSettings(
-            themeMode = if (prefs[Keys.THEME_DARK] != false) ThemeMode.DARK else ThemeMode.LIGHT,
-            amoled = prefs[Keys.AMOLED] ?: false,
-            accent = AccentColor.fromKey(prefs[Keys.ACCENT] ?: AccentColor.ROSE.key),
-            columns = prefs[Keys.COLUMNS] ?: 3,
-            gridMode = if (prefs[Keys.GRID_SCROLL] == true) GridMode.SCROLL else GridMode.SWIPE,
-            selectedFolders = prefs[Keys.SELECTED_FOLDERS] ?: emptySet(),
-            safTreeUris = prefs[Keys.SAF_TREE_URIS] ?: emptySet(),
-            fileTypes = decodeFileTypes(prefs[Keys.FILE_TYPES]),
-            favIds = prefs[Keys.FAV_IDS] ?: emptySet(),
-            dontLoop = prefs[Keys.DONT_LOOP] ?: false,
-            disableSwipeDelete = prefs[Keys.DISABLE_SWIPE_DELETE] ?: true,
-            disableEditDelete = prefs[Keys.DISABLE_EDIT_DELETE] ?: false,
-            copyFavs = prefs[Keys.COPY_FAVS] ?: false,
-            copyFavPath = prefs[Keys.COPY_FAV_PATH] ?: "",
-            copyFavTreeUri = prefs[Keys.COPY_FAV_TREE_URI] ?: "",
-            hiddenFolders = decodeHiddenFolders(prefs[Keys.HIDDEN_FOLDERS]),
-            tabFeatures = TabFeatures(
-                multivideo = prefs[Keys.TAB_FEATURE_MV] ?: false,
-                album = prefs[Keys.TAB_FEATURE_ALBUM] ?: false,
-            ),
-            tabOrder = decodeTabOrder(prefs[Keys.TAB_ORDER]),
-            tabHidden = decodeTabHidden(prefs[Keys.TAB_HIDDEN]),
-            speedIdx = prefs[Keys.SPEED_IDX] ?: 2,
-            customMs = prefs[Keys.CUSTOM_MS] ?: 8_000L,
-            recentWindowDays = prefs[Keys.RECENT_WINDOW] ?: 30,
-            favWindow = decodeFavWindow(prefs[Keys.FAV_WINDOW]),
-            favTypes = FileTypeFilter(
-                photo = prefs[Keys.FAV_TYPE_PHOTO] ?: true,
-                video = prefs[Keys.FAV_TYPE_VIDEO] ?: true,
-                gif = prefs[Keys.FAV_TYPE_GIF] ?: true,
-            ),
-        )
+        settingsFromPrefs(prefs)
     }
 
     suspend fun update(transform: (AppSettings) -> AppSettings) {
@@ -103,39 +72,46 @@ class SettingsRepository(private val context: Context) {
         return imported
     }
 
-    private fun settingsFromPrefs(prefs: Preferences): AppSettings = AppSettings(
-        themeMode = if (prefs[Keys.THEME_DARK] != false) ThemeMode.DARK else ThemeMode.LIGHT,
-        amoled = prefs[Keys.AMOLED] ?: false,
-        accent = AccentColor.fromKey(prefs[Keys.ACCENT] ?: AccentColor.ROSE.key),
-        columns = prefs[Keys.COLUMNS] ?: 3,
-        gridMode = if (prefs[Keys.GRID_SCROLL] == true) GridMode.SCROLL else GridMode.SWIPE,
-        selectedFolders = prefs[Keys.SELECTED_FOLDERS] ?: emptySet(),
-        safTreeUris = prefs[Keys.SAF_TREE_URIS] ?: emptySet(),
-        fileTypes = decodeFileTypes(prefs[Keys.FILE_TYPES]),
-        favIds = prefs[Keys.FAV_IDS] ?: emptySet(),
-        dontLoop = prefs[Keys.DONT_LOOP] ?: false,
-        disableSwipeDelete = prefs[Keys.DISABLE_SWIPE_DELETE] ?: true,
-        disableEditDelete = prefs[Keys.DISABLE_EDIT_DELETE] ?: false,
-        copyFavs = prefs[Keys.COPY_FAVS] ?: false,
-        copyFavPath = prefs[Keys.COPY_FAV_PATH] ?: "",
-        copyFavTreeUri = prefs[Keys.COPY_FAV_TREE_URI] ?: "",
-        hiddenFolders = decodeHiddenFolders(prefs[Keys.HIDDEN_FOLDERS]),
-        tabFeatures = TabFeatures(
+    private fun settingsFromPrefs(prefs: Preferences): AppSettings {
+        val features = TabFeatures(
             multivideo = prefs[Keys.TAB_FEATURE_MV] ?: false,
             album = prefs[Keys.TAB_FEATURE_ALBUM] ?: false,
-        ),
-        tabOrder = decodeTabOrder(prefs[Keys.TAB_ORDER]),
-        tabHidden = decodeTabHidden(prefs[Keys.TAB_HIDDEN]),
-        speedIdx = prefs[Keys.SPEED_IDX] ?: 2,
-        customMs = prefs[Keys.CUSTOM_MS] ?: 8_000L,
-        recentWindowDays = prefs[Keys.RECENT_WINDOW] ?: 30,
-        favWindow = decodeFavWindow(prefs[Keys.FAV_WINDOW]),
-        favTypes = FileTypeFilter(
-            photo = prefs[Keys.FAV_TYPE_PHOTO] ?: true,
-            video = prefs[Keys.FAV_TYPE_VIDEO] ?: true,
-            gif = prefs[Keys.FAV_TYPE_GIF] ?: true,
-        ),
-    )
+        )
+        return AppSettings(
+            themeMode = if (prefs[Keys.THEME_DARK] != false) ThemeMode.DARK else ThemeMode.LIGHT,
+            amoled = prefs[Keys.AMOLED] ?: false,
+            accent = AccentColor.fromKey(prefs[Keys.ACCENT] ?: AccentColor.ROSE.key),
+            columns = prefs[Keys.COLUMNS] ?: 3,
+            gridMode = if (prefs[Keys.GRID_SCROLL] == true) GridMode.SCROLL else GridMode.SWIPE,
+            selectedFolders = prefs[Keys.SELECTED_FOLDERS] ?: emptySet(),
+            safTreeUris = prefs[Keys.SAF_TREE_URIS] ?: emptySet(),
+            fileTypes = decodeFileTypes(prefs[Keys.FILE_TYPES]),
+            favIds = prefs[Keys.FAV_IDS] ?: emptySet(),
+            dontLoop = prefs[Keys.DONT_LOOP] ?: false,
+            disableSwipeDelete = prefs[Keys.DISABLE_SWIPE_DELETE] ?: true,
+            disableEditDelete = prefs[Keys.DISABLE_EDIT_DELETE] ?: false,
+            copyFavs = prefs[Keys.COPY_FAVS] ?: false,
+            copyFavPath = prefs[Keys.COPY_FAV_PATH] ?: "",
+            copyFavTreeUri = prefs[Keys.COPY_FAV_TREE_URI] ?: "",
+            hiddenFolders = decodeHiddenFolders(prefs[Keys.HIDDEN_FOLDERS]),
+            tabFeatures = features,
+            tabOrder = decodeTabOrder(prefs[Keys.TAB_ORDER]),
+            tabHidden = decodeTabHidden(
+                raw = prefs[Keys.TAB_HIDDEN],
+                features = features,
+                hadExplicitHidden = prefs.contains(Keys.TAB_HIDDEN),
+            ),
+            speedIdx = prefs[Keys.SPEED_IDX] ?: 2,
+            customMs = prefs[Keys.CUSTOM_MS] ?: 8_000L,
+            recentWindowDays = prefs[Keys.RECENT_WINDOW] ?: 30,
+            favWindow = decodeFavWindow(prefs[Keys.FAV_WINDOW], prefs[Keys.RECENT_WINDOW]),
+            favTypes = FileTypeFilter(
+                photo = prefs[Keys.FAV_TYPE_PHOTO] ?: true,
+                video = prefs[Keys.FAV_TYPE_VIDEO] ?: true,
+                gif = prefs[Keys.FAV_TYPE_GIF] ?: true,
+            ),
+        )
+    }
 
     private object Keys {
         val THEME_DARK = booleanPreferencesKey("theme_dark")
@@ -168,19 +144,52 @@ class SettingsRepository(private val context: Context) {
     }
 
     private fun decodeTabOrder(raw: String?): List<AppTab> {
-        if (raw.isNullOrBlank()) return AppTab.defaultOrder
-        return raw.split(",").mapNotNull { AppTab.fromKey(it.trim()) }
-            .ifEmpty { AppTab.defaultOrder }
+        val parsed = if (raw.isNullOrBlank()) {
+            AppTab.defaultOrder
+        } else {
+            raw.split(",").mapNotNull { AppTab.fromKey(it.trim()) }
+                .ifEmpty { AppTab.defaultOrder }
+        }.toMutableList()
+        // Ensure optional tabs appear in Settings reorder UI even for older installs
+        AppTab.defaultOrder.forEach { tab ->
+            if (tab !in parsed) {
+                val si = parsed.indexOf(AppTab.SETTINGS)
+                if (si >= 0) parsed.add(si, tab) else parsed.add(tab)
+            }
+        }
+        return parsed
     }
 
-    private fun decodeTabHidden(raw: String?): Set<AppTab> {
-        if (raw.isNullOrBlank()) return emptySet()
+    private fun decodeTabHidden(
+        raw: String?,
+        features: TabFeatures,
+        hadExplicitHidden: Boolean,
+    ): Set<AppTab> {
+        if (!hadExplicitHidden || raw == null) {
+            // Fresh / pre-merge: hide Multi-Video & Album unless old feature toggles enabled them
+            val hidden = AppTab.defaultHidden.toMutableSet()
+            if (features.multivideo) hidden.remove(AppTab.MULTIVIDEO)
+            if (features.album) hidden.remove(AppTab.ALBUM)
+            return hidden
+        }
+        if (raw.isBlank()) return emptySet()
         return raw.split(",").mapNotNull { AppTab.fromKey(it.trim()) }.toSet()
     }
 
-    private fun decodeFavWindow(raw: String?): FavWindow = when {
-        raw == null || raw == "all" -> FavWindow.ALL
-        raw.startsWith("days:") -> FavWindow.Days(raw.removePrefix("days:").toIntOrNull() ?: 30)
+    private fun decodeFavWindow(raw: String?, recentDays: Int? = null): FavWindow = when {
+        raw == null -> {
+            if (recentDays != null && recentDays in SlideshowSpeeds.recentWindows) {
+                FavWindow.fromRecentDays(recentDays)
+            } else {
+                FavWindow.ALL
+            }
+        }
+        raw == "all" -> FavWindow.ALL
+        raw.startsWith("days:") -> {
+            val days = raw.removePrefix("days:").toIntOrNull() ?: 30
+            FavWindow.options.filterIsInstance<FavWindow.Days>().find { it.days == days }
+                ?: FavWindow.Days(days.coerceIn(1, 3650))
+        }
         else -> FavWindow.ALL
     }
 

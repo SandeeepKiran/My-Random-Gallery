@@ -1,36 +1,41 @@
 package com.mousy.myrandomgallery.ui.screens
 
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.CalendarMonth
 import androidx.compose.material.icons.filled.HistoryToggleOff
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
+import com.mousy.myrandomgallery.data.model.FavWindow
+import com.mousy.myrandomgallery.data.model.FileTypeFilter
+import com.mousy.myrandomgallery.data.model.GridMode
 import com.mousy.myrandomgallery.data.model.MediaItem
 import com.mousy.myrandomgallery.ui.components.EmptyFoldersState
 import com.mousy.myrandomgallery.ui.components.MediaGrid
+import com.mousy.myrandomgallery.ui.components.MediaListFilterBar
 
 @Composable
 fun RecentScreen(
     items: List<MediaItem>,
     columns: Int,
-    recentWindowDays: Int,
     noFolders: Boolean,
     favouriteKeys: Set<String>,
     selectedKeys: Set<String>,
-    onCycleWindow: () -> Unit,
+    listTypes: FileTypeFilter,
+    listWindow: FavWindow,
+    typeMenuOpen: Boolean,
+    onToggleTypeMenu: () -> Unit,
+    onToggleType: (String) -> Unit,
+    onSelectWindow: (FavWindow) -> Unit,
     onItemClick: (MediaItem) -> Unit,
     onItemDoubleTap: (MediaItem) -> Unit,
     onItemLongPress: (MediaItem) -> Unit,
@@ -39,18 +44,15 @@ fun RecentScreen(
     modifier: Modifier = Modifier,
 ) {
     Column(modifier = modifier.fillMaxSize()) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 12.dp, vertical = 14.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Text("Recent", style = MaterialTheme.typography.headlineSmall, modifier = Modifier.weight(1f))
-            OutlinedButton(onClick = onCycleWindow) {
-                Icon(Icons.Default.CalendarMonth, null, modifier = Modifier.size(18.dp))
-                Text("$recentWindowDays Days", modifier = Modifier.padding(start = 4.dp))
-            }
-        }
+        MediaListFilterBar(
+            title = "Recent",
+            types = listTypes,
+            window = listWindow,
+            typeMenuOpen = typeMenuOpen,
+            onToggleTypeMenu = onToggleTypeMenu,
+            onToggleType = onToggleType,
+            onSelectWindow = onSelectWindow,
+        )
 
         when {
             noFolders -> EmptyFoldersState(onChooseFolders = onGoSettings)
@@ -79,7 +81,7 @@ fun RecentScreen(
             else -> MediaGrid(
                 items = items,
                 columns = columns,
-                gridMode = com.mousy.myrandomgallery.data.model.GridMode.SCROLL,
+                gridMode = GridMode.SCROLL,
                 favouriteKeys = favouriteKeys,
                 selectedKeys = selectedKeys,
                 onItemClick = onItemClick,
@@ -87,6 +89,7 @@ fun RecentScreen(
                 onItemLongPress = onItemLongPress,
                 onSwipeShuffle = {},
                 onPinchColumns = onPinchColumns,
+                modifier = Modifier.weight(1f),
             )
         }
     }
